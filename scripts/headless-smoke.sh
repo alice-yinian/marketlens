@@ -8,9 +8,14 @@
 #   weston headless（Wayland 显示）+ Xwayland（真实 X display）
 #   + 自建 xshot（x11rb 抓窗口，见 MARKETLENS_SHOT）
 #
-# 注意 Tauri 的 debug 构建会连接 devUrl 而不是内嵌前端资源，
-# 因此 debug 二进制必须先起 vite dev server（MARKETLENS_DEV=1）。
-# release 构建内嵌 dist，不需要 dev server。
+# 注意：**裸 `cargo build` 的产物（debug 与 release 都一样）会连接 devUrl，
+# 而不是内嵌前端资源**——启动后窗口里只有一行 "Could not connect to localhost"。
+# （本文档原先写的是「release 构建内嵌 dist」，2026-09-25 实测证伪。）
+#
+#   裸 cargo build 的产物        → 必须起 vite dev server（MARKETLENS_DEV=1）
+#   npx tauri build 的产物       → 内嵌 dist，不需要 dev server
+#
+# 所以用 release 二进制冒烟时，务必确认它来自 `npx tauri build`。
 #
 # 用法：
 #   MARKETLENS_DEV=1 scripts/headless-smoke.sh /tmp/shot.png
