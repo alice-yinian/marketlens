@@ -5,6 +5,10 @@
 
 mod commands;
 mod error;
+mod fetch;
+mod market;
+mod okx;
+mod settings;
 mod storage;
 mod system;
 
@@ -26,11 +30,19 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let handle = app.handle().clone();
+
             let db = tauri::async_runtime::block_on(storage::Db::open(&handle))?;
             app.manage(db);
+            app.manage(fetch::cache::LiveCache::new());
+            app.manage(okx::client::OkxClient::new()?);
+
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![commands::system::app_info])
+        .invoke_handler(tauri::generate_handler![
+            commands::system::app_info,
+            commands::live::live_refresh,
+            commands::live::watchlist_get,
+        ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用启动失败");
 }
@@ -52,6 +64,7 @@ mod tests {
     use sqlx::SqlitePool;
     use ts_rs::{Config, TS};
 
+    use crate::market::live::{LiveSnapshot, MarketState};
     use crate::system::AppInfo;
 
     /// 去掉 TS 源码里的块注释。
@@ -88,20 +101,33 @@ mod tests {
     /// number。声明成 bigint 会让类型系统撒谎：调用方以为要处理 bigint，
     /// 运行时却是 number，这类错误只会在生产环境咬人。
     ///
+    /// 本项目里这不是小概率问题：**所有时间戳都是 Unix 毫秒 i64**（§7.1）。
     /// 新增导出类型时，把它加进下面的列表。
     #[test]
     fn i64_fields_are_declared_as_number_not_bigint() {
-        let declared = [(
-            "AppInfo",
-            <AppInfo as TS>::export_to_string(&Config::default()).expect("导出失败"),
-        )];
+        let declared = [
+            (
+                "AppInfo",
+                <AppInfo as TS>::export_to_string(&Config::default()),
+            ),
+            (
+                "MarketState",
+                <MarketState as TS>::export_to_string(&Config::default()),
+            ),
+            (
+                "LiveSnapshot",
+                <LiveSnapshot as TS>::export_to_string(&Config::default()),
+            ),
+        ];
 
-        for (name, ts) in declared {
+        for (name, result) in declared {
+            let ts = result.expect("导出失败");
             let code = strip_block_comments(&ts);
             assert!(
                 !code.contains("bigint"),
                 "{name} 的 TypeScript 声明里出现了 bigint。JSON 传输后实际是 number，\
-                 请给对应的 i64 字段加 #[ts(type = \"number\")]。\n实际声明：\n{code}"
+                 请给对应的 i64 字段加 #[ts(type = \"number\")]（可选字段用 \"number | null\"）。\
+                 \n实际声明：\n{code}"
             );
         }
     }

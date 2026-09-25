@@ -55,4 +55,12 @@ impl Db {
                 .await?;
         Ok(version)
     }
+
+    pub async fn get_setting(&self, key: &str) -> AppResult<Option<String>> {
+        let value: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(value)
+    }
 }

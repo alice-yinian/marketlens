@@ -22,6 +22,16 @@ pub enum AppError {
     #[error("无法解析应用数据目录：{0}")]
     AppDataDir(String),
 
+    /// OKX 业务错误：HTTP 200 但信封里的 code 非 "0"
+    #[error("OKX 接口返回错误 {code}：{msg}")]
+    Okx { code: String, msg: String },
+
+    #[error("网络请求失败：{0}")]
+    Http(String),
+
+    #[error("响应解析失败：{0}")]
+    Decode(String),
+
     #[error("{0}")]
     Config(String),
 }
@@ -42,6 +52,9 @@ impl AppError {
             AppError::Migration(_) => "Migration",
             AppError::Io(_) => "Io",
             AppError::AppDataDir(_) => "AppDataDir",
+            AppError::Okx { .. } => "Okx",
+            AppError::Http(_) => "Http",
+            AppError::Decode(_) => "Decode",
             AppError::Config(_) => "Config",
         }
     }
@@ -52,7 +65,10 @@ impl AppError {
             AppError::Migration(_) => false,
             AppError::Config(_) => false,
             AppError::AppDataDir(_) => false,
-            AppError::Database(_) | AppError::Io(_) => true,
+            // OKX 业务错误是参数/权限问题，重试无意义；解析失败同理
+            AppError::Okx { .. } => false,
+            AppError::Decode(_) => false,
+            AppError::Database(_) | AppError::Io(_) | AppError::Http(_) => true,
         }
     }
 }

@@ -285,7 +285,7 @@ requestPath 包含 query string，但不含域名
 | 持仓量 5s 序列 | `GET /api/v5/market/open-interest` | **仅近期** | Live |
 | **多空账户比（历史）** | `GET /api/v5/rubik/stat/contracts/long-short-account-ratio?ccy=BTC` | **2023-06-09 起**，`begin`/`end`（ms，闭区间），默认 1m 粒度 | Review |
 | **持仓量/成交额（历史）** | `GET /api/v5/rubik/stat/contracts/open-interest-volume?ccy=BTC` | **2023-06-09 起**，同上 | Review |
-| **主动买卖量（历史）** | `GET /api/v5/rubik/stat/taker-volume?ccy=BTC&instType=SWAP` | **2023-06-09 起**，同上 | Review |
+| **主动买卖量（历史）** | `GET /api/v5/rubik/stat/taker-volume?ccy=BTC&instType=CONTRACTS` | **2023-06-09 起**，同上 | Review / Live |
 | 合约信息 | `GET /api/v5/public/instruments?instType=SWAP` | 仅当前（**必须拿 `ctVal`**） | 两者 |
 | 深度 | `GET /api/v5/market/books` | **无历史** | Live |
 
@@ -302,6 +302,26 @@ requestPath 包含 query string，但不含域名
 | 账单流水 | `GET /api/v5/account/bills-archive` | 归档 |
 
 > `posMode` 必须读取：净持仓模式下 `posSide` 恒为 `net`，长空模式才有 `long`/`short`。历史展示与统计都要按它分支。
+
+#### 6.1.2.1 真机核对结论（2026-09-25）
+
+以下事实来自对 `www.okx.com` 的**实际调用**，不是文档摘抄——初版设计里有三处摘抄错误，在此修正：
+
+| 项 | 初版（错误） | 实测（正确） |
+|---|---|---|
+| Rubik 主动买卖量的 `instType` | `SWAP` | **`CONTRACTS`**（合法值只有 `SPOT` / `CONTRACTS`；传 `SWAP` 返回 `51000 Parameter instType error`） |
+| 基差数据源 | 以为 `market/ticker` 带 `idxPx` | **ticker 不含 `idxPx`**；基差 = `(markPx − idxPx) / idxPx`，需 `public/mark-price` + `market/index-tickers` 两个端点 |
+| `ctVal` 示例值 | BTC-USDT-SWAP = 0.001 BTC | **0.01 BTC**（ETH-USDT-SWAP = 0.1 ETH） |
+| 成交量的单位 | 以为 `volCcy24h` 是 USDT 计价 | **`vol24h` 是合约张数，`volCcy24h` 是基础币（如 BTC）**。USD 成交额 = `volCcy24h × last`（实测 90477.2 × 83789.7 ≈ 75.8 亿） |
+
+其它实测确认（影响反序列化实现）：
+
+- **所有数值都是 JSON 字符串**（`"83789.7"`），不是 number；必须逐字段解析。
+- **空串是缺失值的常见表示**：`public/funding-rate` 的 `nextFundingRate` 实测就是 `""`。
+- **Rubik 端点返回「字符串数组的数组」**（`[["1790322000000","1.24"], ...]`），不是对象数组；需单独解析，不能套用通用 struct。
+- `market/candles` 返回 9 元素数组：`[ts, open, high, low, close, vol, volCcy, volQuote, confirm]`。
+- `public/open-interest` 提供 **`oi` / `oiCcy` / `oiUsd`** 三个已命名字段，名义价值直接取 `oiUsd`，无需自行换算。
+- `www.okx.com` 可达；**`aws.okx.com` 在本开发机不可达**，base URL 固定用 `www.okx.com`。
 
 #### 6.1.3 指标历史可得性矩阵 ⭐
 
@@ -451,7 +471,11 @@ pub enum Crowding    { LongCrowded, ShortCrowded, Balanced }
 判定规则（参数可配置，落 `settings` 表）：
 
 - **趋势**：`ema20 > ema60 > ema200` 且 `close > ema20` → `Uptrend`；反向 → `Downtrend`；`|ema20-ema60|/close < 0.5%` 且价格在 `ema200` 上下 1.5% 内 → `Range`；其余 → `Transition`。
-- **波动**：以 `realizedVol` 的历史分位（近 90 天）划分——`<25%` Low，`25%~75%` Normal，`75%~95%` High，`>95%` Extreme。
+- **波动**：以 `realizedVol` 的历史分位划分——`<25%` Low，`25%~75%` Normal，`75%~95%` High，`>95%` Extreme。
+
+> **M1 的实现偏差（已确认可接受）**：设计目标是「近 90 天分位」，但 90 天的 1H 窗口序列需要约 2160 根 K 线，得靠 M3 的采集计划器分页拉取。M1 的做法是**用现有 300 根 1H K 线做滚动 24 小时窗口**，得到约 276 个样本（回看约 12 天）。
+>
+> 关键取舍：**当前值与历史样本使用完全相同的窗口长度与周期数**——同一把尺子量出来的分位才有意义。因此宁可回看窗口短，也不混用「日线算历史、小时线算当前」这种口径不一致的做法。M3 只需把样本来源换成更长的序列，判定逻辑不动。
 - **拥挤**：`fundingAnnualized > 30%` 或 `longShortRatio > 2.0` → `LongCrowded`；对称反向 → `ShortCrowded`；否则 `Balanced`。
 
 同时输出**规则触发说明**（`signals: Vec<String>`，如 `"资金费率年化 +42%，多头拥挤度偏高"`）。AI 需要的是「为什么」，不只是「是什么」。
@@ -1269,7 +1293,9 @@ CREATE TABLE journal (
 | 前端 | Vitest | 格式化函数、进度条状态机、可得性提示渲染 |
 | 端到端 | Windows：`tauri-driver`（WebDriver） | 解锁 → 实盘刷新 → 生成提示词 → 断言输出。⚠️ `tauri-driver` **不支持 Android**，Android 用手工冒烟清单 |
 
-### 13.1 已落地的测试（M0）
+### 13.1 已落地的测试
+
+**M0（4 项）**
 
 | 测试 | 守住什么 |
 |---|---|
@@ -1277,6 +1303,44 @@ CREATE TABLE journal (
 | `cargo_version_matches_tauri_config` | `tauri.conf.json` 与 `Cargo.toml` 的版本号不漂移 |
 | `i64_fields_are_declared_as_number_not_bigint` | TS 声明里不出现 `bigint`（§7.2 的契约规则） |
 | `export_bindings_appinfo`（ts-rs 自动生成） | 类型导出链路可执行 |
+
+**M1（49 项）**，按关注点分组：
+
+| 关注点 | 代表性测试 |
+|---|---|
+| **真机响应映射** | `ticker_maps_real_response`、`funding_rate_handles_empty_next_rate`、`open_interest_exposes_named_usd_value` —— 直接使用**真机抓取的 JSON 样本**，字段名或类型判断错就会红 |
+| **坏数据不致命** | `malformed_rows_are_skipped_not_fatal`、`rejects_malformed_rows` —— 一行坏数据不该让整段序列消失 |
+| **指标数学** | `atr_accounts_for_gaps`（跳空必须走 `|high − prevClose|`）、`rsi_is_100_for_monotonic_rise_and_50_when_flat`（价格不动时取中性 50 而非 100）、`realized_vol_scales_with_period_count` |
+| **分类不猜** | `insufficient_candles_reports_unavailable_instead_of_guessing`、`missing_vol_history_is_reported_not_defaulted` —— 样本不足时必须 `None` + 说明原因 |
+| **限流时序** | `waits_only_after_quota_exhausted`、`groups_are_counted_independently`（用 `start_paused` 驱动时间，不依赖真实时钟） |
+| **缓存语义** | `hit_within_ttl_and_marked_as_cached`、`miss_after_ttl`（注入时间点，无 `sleep`） |
+| **退避** | `backoff_stays_within_bounds` |
+
+**联网测试（默认 `#[ignore]`）**：`okx_live_snapshot_is_sane`（端到端采集并打印数值供人工比对）、`dump_indicators_for_crosscheck`（落盘输入与输出）。它们访问真实 API，不进 CI。
+
+### 13.2 指标公式的独立交叉验证 ⭐
+
+**问题**：Rust 侧的指标单元测试用的是我自己对公式的预期——如果公式本身理解错了，测试会跟着一起错。这类错误最危险，因为它会污染每一条 AI 复盘结论。
+
+**做法**：用 Python **独立实现**同一套公式，对**同一份输入**重算并逐位比对。输入由 Rust 落盘，从而消除「行情推进导致两次运行数据不同」的干扰。
+
+```bash
+cd src-tauri && cargo test --lib dump_indicators_for_crosscheck -- --ignored
+cd .. && python3 scripts/crosscheck_indicators.py
+```
+
+**实测结果（2026-09-25）**：
+
+| 指标 | Rust | Python | 相对差 |
+|---|---|---|---|
+| EMA20 | 84202.4634139598 | 84202.4634139598 | `0.00e+00` |
+| EMA60 | 84396.5793598429 | 84396.5793598429 | `0.00e+00` |
+| EMA200 | 82426.6968384827 | 82426.6968384827 | `0.00e+00` |
+| RSI14 | 44.0026791159 | 44.0026791159 | `0.00e+00` |
+| ATR% | 0.0056558330 | 0.0056558330 | `0.00e+00` |
+| 已实现波动率 | 0.3859204361 | 0.3859204361 | `0.00e+00` |
+
+> 附带教训：第一版脚本硬编码了「上一次的 Rust 值」，结果因为未收盘 K 线在两次运行间变化，**RSI 报了 0.39% 的假差异**。落盘输入后消除。任何跨运行比对数值的验证都要先固定输入，否则会把数据漂移误判成代码缺陷。
 
 `cargo test`、`cargo fmt --check`、`cargo clippy -D warnings` 均已在开发机通过。
 

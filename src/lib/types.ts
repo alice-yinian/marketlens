@@ -26,3 +26,57 @@ schema_version: number,
  * `std::env::consts::OS`：linux / windows / android / macos
  */
 target_os: string, };
+
+export type Crowding = "LongCrowded" | "ShortCrowded" | "Balanced";
+
+/**
+ * 一次实盘刷新结果。
+ */
+export type LiveSnapshot = { ts: number, 
+/**
+ * 数据来自缓存（未发起网络请求）
+ */
+cache_hit: boolean, fetched_at: number, watchlist: Array<string>, instruments: Array<MarketState>, 
+/**
+ * 非致命问题汇总：单个标的失败不会让整次刷新失败
+ */
+warnings: Array<string>, };
+
+/**
+ * 单标的的完整市场状态。
+ */
+export type MarketState = { inst_id: string, ts: number, last: number, 
+/**
+ * 24h 涨跌幅
+ */
+change_pct: number, high_24h: number, low_24h: number, 
+/**
+ * USD 成交额（已由基础币成交量 × 价格换算）
+ */
+volume_24h_usd: number, funding_rate: number, 
+/**
+ * 资金费率年化（8h 结算 → 日 3 次）
+ */
+funding_annualized: number, next_funding_rate: number | null, next_funding_time: number | null, open_interest_usd: number | null, basis_pct: number | null, long_short_ratio: number | null, taker_buy_sell_ratio: number | null, ema20: number | null, ema60: number | null, ema200: number | null, rsi14: number | null, atr_pct: number | null, realized_vol: number | null, trend: TrendRegime | null, vol: VolRegime | null, crowding: Crowding, signals: Array<string>, 
+/**
+ * 拿不到的指标及原因。模板渲染成「数据不可得」，绝不留空。
+ */
+unavailable: Array<string>, };
+
+export type Regime = { trend: TrendRegime | null, vol: VolRegime | null, 
+/**
+ * 资金费率必然存在，所以拥挤度总能给出结论
+ */
+crowding: Crowding, 
+/**
+ * 规则触发说明。提示词需要「为什么」，不只是「是什么」。
+ */
+signals: Array<string>, 
+/**
+ * 无法判定的项及原因。渲染成「数据不可得」，绝不留空。
+ */
+unavailable: Array<string>, };
+
+export type TrendRegime = "Uptrend" | "Downtrend" | "Range" | "Transition";
+
+export type VolRegime = "Low" | "Normal" | "High" | "Extreme";
