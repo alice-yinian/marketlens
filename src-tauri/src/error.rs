@@ -38,6 +38,12 @@ pub enum AppError {
     #[error("密钥库操作失败：{0}")]
     Vault(String),
 
+    /// 复盘时段超出已确认的 90 天硬上限。
+    ///
+    /// 刻意**不静默截断**：静默截断会让用户以为看全了，那是最危险的行为。
+    #[error("时段超出上限：最多 90 天")]
+    RangeTooLarge,
+
     #[error("{0}")]
     Config(String),
 }
@@ -63,6 +69,7 @@ impl AppError {
             AppError::Decode(_) => "Decode",
             AppError::VaultLocked => "VaultLocked",
             AppError::Vault(_) => "Vault",
+            AppError::RangeTooLarge => "RangeTooLarge",
             AppError::Config(_) => "Config",
         }
     }
@@ -78,6 +85,7 @@ impl AppError {
             AppError::Decode(_) => false,
             // 锁定与密钥库错误都需要用户动作，重试不会自愈
             AppError::VaultLocked | AppError::Vault(_) => false,
+            AppError::RangeTooLarge => false,
             AppError::Database(_) | AppError::Io(_) | AppError::Http(_) => true,
         }
     }

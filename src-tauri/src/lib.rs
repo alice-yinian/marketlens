@@ -10,6 +10,7 @@ mod fetch;
 mod market;
 mod okx;
 mod position;
+mod review;
 mod settings;
 mod storage;
 mod system;
@@ -41,6 +42,7 @@ pub fn run() {
             app.manage(fetch::cache::LiveCache::new());
             app.manage(okx::client::OkxClient::new()?);
             app.manage(vault::Vault::new(&handle)?);
+            app.manage(review::ReviewRegistry::new());
 
             Ok(())
         })
@@ -60,6 +62,9 @@ pub fn run() {
             commands::account::account_snapshot,
             commands::account::watchlist_set,
             commands::account::watchlist_candidates,
+            commands::review::review_plan,
+            commands::review::review_fetch,
+            commands::review::review_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用启动失败");
@@ -82,10 +87,16 @@ mod tests {
     use sqlx::SqlitePool;
     use ts_rs::{Config, TS};
 
-    use crate::credentials::CredentialMeta;
+    use crate::commands::account::WatchlistCandidate;
+    use crate::commands::system::BootstrapState;
+    use crate::commands::vault::VaultStatus;
+    use crate::credentials::{CredentialMeta, CredentialProbe};
+    use crate::fetch::executor::{ExecutionReport, Progress, SeriesReport, SeriesStatus};
+    use crate::fetch::plan::{AvailabilityNote, FetchPlan, SeriesKind, SeriesPlan};
     use crate::market::live::{LiveSnapshot, MarketState};
+    use crate::market::regime::{Crowding, Regime, TrendRegime, VolRegime};
     use crate::position::trace::TraceCoverage;
-    use crate::position::{AccountOverview, Position};
+    use crate::position::{AccountOverview, AccountSnapshot, CurrencyBalance, Position};
     use crate::system::AppInfo;
 
     /// 去掉 TS 源码里的块注释。
@@ -116,57 +127,101 @@ mod tests {
         out
     }
 
-    /// 所有 i64 字段必须显式声明为 TS 的 number。
+    /// 把 Rust 侧的全部导出类型写进前端的 `src/lib/types.ts`，并就地校验契约。
     ///
-    /// ts-rs 默认把 i64 映射成 `bigint`，但我们的 IPC 走 JSON——前端拿到的实际是
-    /// number。声明成 bigint 会让类型系统撒谎：调用方以为要处理 bigint，
-    /// 运行时却是 number，这类错误只会在生产环境咬人。
+    /// 刻意**不用 ts-rs 的 `#[ts(export)]`**，它有两个实测踩到的坑：
     ///
-    /// 本项目里这不是小概率问题：**所有时间戳都是 Unix 毫秒 i64**（§7.1）。
-    /// 新增导出类型时，把它加进下面的列表。
+    /// 1. 它为**每个类型**生成一个独立的导出测试，而它们写同一个文件时是
+    ///    「第一个截断、后续追加」。于是**带过滤地跑测试**会把文件截断成只剩匹配到的
+    ///    那一个类型——实测把 16 个类型截成了 1 个，而且丢的是尚未提交的内容。
+    /// 2. 文件由别的测试写入，导致「校验生成结果」的测试无法确定性地读到它
+    ///    （测试并行执行，顺序不保证）。
+    ///
+    /// 集中导出同时解决两者：过滤运行只会「不导出」而不会破坏文件；校验也能在
+    /// 同一处、同一份字符串上完成，不依赖任何执行顺序。声明顺序也由这里决定，
+    /// diff 才稳定（ts-rs 的自动导出顺序取决于测试调度）。
+    ///
+    /// **新增导出类型时必须加进下面的列表**——忘了加会让前端 import 不到该类型，
+    /// 在 `npm run typecheck` 处立刻暴露，不会静默溜过去。
     #[test]
-    fn i64_fields_are_declared_as_number_not_bigint() {
-        let declared = [
-            (
-                "AppInfo",
-                <AppInfo as TS>::export_to_string(&Config::default()),
-            ),
-            (
-                "MarketState",
-                <MarketState as TS>::export_to_string(&Config::default()),
-            ),
-            (
-                "LiveSnapshot",
-                <LiveSnapshot as TS>::export_to_string(&Config::default()),
-            ),
-            (
-                "CredentialMeta",
-                <CredentialMeta as TS>::export_to_string(&Config::default()),
-            ),
-            (
-                "AccountOverview",
-                <AccountOverview as TS>::export_to_string(&Config::default()),
-            ),
-            (
-                "Position",
-                <Position as TS>::export_to_string(&Config::default()),
-            ),
-            (
-                "TraceCoverage",
-                <TraceCoverage as TS>::export_to_string(&Config::default()),
-            ),
-        ];
-
-        for (name, result) in declared {
-            let ts = result.expect("导出失败");
-            let code = strip_block_comments(&ts);
-            assert!(
-                !code.contains("bigint"),
-                "{name} 的 TypeScript 声明里出现了 bigint。JSON 传输后实际是 number，\
-                 请给对应的 i64 字段加 #[ts(type = \"number\")]（可选字段用 \"number | null\"）。\
-                 \n实际声明：\n{code}"
-            );
+    fn export_and_verify_frontend_types() {
+        let config = Config::default();
+        let mut declarations: Vec<String> = Vec::new();
+        macro_rules! declare {
+            ($($ty:ty),+ $(,)?) => {
+                $(
+                    declarations.push(
+                        <$ty as TS>::export_to_string(&config)
+                            .expect(concat!("导出 ", stringify!($ty), " 失败")),
+                    );
+                )+
+            };
         }
+
+        declare!(
+            AppInfo,
+            MarketState,
+            LiveSnapshot,
+            Regime,
+            TrendRegime,
+            VolRegime,
+            Crowding,
+            VaultStatus,
+            CredentialMeta,
+            CredentialProbe,
+            BootstrapState,
+            AccountOverview,
+            AccountSnapshot,
+            CurrencyBalance,
+            Position,
+            TraceCoverage,
+            WatchlistCandidate,
+            FetchPlan,
+            SeriesPlan,
+            SeriesKind,
+            SeriesStatus,
+            SeriesReport,
+            AvailabilityNote,
+            Progress,
+            ExecutionReport,
+        );
+
+        let mut output = String::from(
+            "// This file was generated by [ts-rs](https://github.com/Aleph-Alpha/ts-rs). \
+             Do not edit this file manually.\n\n",
+        );
+        for declaration in &declarations {
+            output.push_str(declaration);
+            output.push('\n');
+        }
+
+        // 校验一：TS 声明里不得出现 bigint。
+        //
+        // ts-rs 把 `i64` **与 `u64`** 都映射成 `bigint`，而 IPC 走 JSON——
+        // 前端拿到的实际是 number。声明成 bigint 会让类型系统撒谎：
+        // 调用方以为要处理 bigint，运行时却是 number。
+        //
+        // 必须剥注释再判定：生成的声明带 Rust 文档注释，而注释里完全可能出现
+        // "bigint" 这个词（本文档就在解释这个坑）。
+        let code = strip_block_comments(&output);
+        assert!(
+            !code.contains("bigint"),
+            "生成的 TypeScript 声明里出现了 bigint。JSON 传输后实际是 number，\
+             请给对应的 i64/u64 字段加 #[ts(type = \"number\")]（可选字段用 \"number | null\"）。\
+             \n实际声明：\n{code}"
+        );
+
+        // 校验二：类型数量必须与列表一致，防止「加了类型却忘了导出」。
+        let declared = code.matches("export type").count();
+        assert_eq!(
+            declared,
+            declarations.len(),
+            "导出列表有 {} 项，但生成结果里有 {declared} 个类型声明",
+            declarations.len()
+        );
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/lib/types.ts");
+        std::fs::write(&path, output).expect("写入 types.ts 失败");
     }
 
     /// 版本号的单一来源是 tauri.conf.json（设计文档 §14）。Cargo.toml 必须与它一致，

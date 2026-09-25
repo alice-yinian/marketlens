@@ -53,7 +53,7 @@ pub async fn watchlist_set(db: State<'_, Db>, watchlist: Vec<String>) -> AppResu
 /// 为什么按成交额排：成交额低的合约点差大、数据质量差，而且它们的资金费率与
 /// 多空比更容易被单笔大单扭曲——用它们做复盘会得出误导性结论。
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub struct WatchlistCandidate {
     pub inst_id: String,
     pub last: f64,

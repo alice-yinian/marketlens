@@ -63,9 +63,17 @@ pub mod public {
     /// 全市场行情：引导第 3 步的候选标的排序依据
     pub const TICKERS: &str = "/api/v5/market/tickers";
     pub const CANDLES: &str = "/api/v5/market/candles";
+    /// 历史 K 线：复盘的历史主干，可完整回溯（游标分页）
+    pub const HISTORY_CANDLES: &str = "/api/v5/market/history-candles";
+    /// 标记价 K 线（与指数价组合重建基差）
+    pub const HISTORY_MARK_PRICE_CANDLES: &str = "/api/v5/market/history-mark-price-candles";
+    /// 指数价 K 线（instId 用指数 ID，如 `BTC-USDT`）
+    pub const HISTORY_INDEX_CANDLES: &str = "/api/v5/market/history-index-candles";
     pub const INDEX_TICKERS: &str = "/api/v5/market/index-tickers";
     pub const MARK_PRICE: &str = "/api/v5/public/mark-price";
     pub const FUNDING_RATE: &str = "/api/v5/public/funding-rate";
+    /// 资金费率历史：约 90 天，游标分页
+    pub const FUNDING_RATE_HISTORY: &str = "/api/v5/public/funding-rate-history";
     pub const OPEN_INTEREST: &str = "/api/v5/public/open-interest";
     /// 合约元数据：张数 → 币数量的换算依据
     pub const INSTRUMENTS: &str = "/api/v5/public/instruments";

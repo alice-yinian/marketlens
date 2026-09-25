@@ -16,7 +16,7 @@ use crate::vault::Vault;
 
 /// 凭据元数据（可安全落库、可安全传给前端）。
 #[derive(Debug, Clone, Serialize, TS, sqlx::FromRow)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub struct CredentialMeta {
     pub id: String,
     pub label: String,
@@ -50,7 +50,7 @@ pub struct SaveCredentialInput {
 
 /// 凭据探测结果（`credentials_test` 的返回）。
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub struct CredentialProbe {
     pub ok: bool,
     pub permissions: Option<String>,

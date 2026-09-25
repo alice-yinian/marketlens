@@ -10,7 +10,7 @@ use ts_rs::TS;
 use crate::market::{Candle, indicators};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub enum TrendRegime {
     Uptrend,
     Downtrend,
@@ -19,7 +19,7 @@ pub enum TrendRegime {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub enum VolRegime {
     Low,
     Normal,
@@ -28,7 +28,7 @@ pub enum VolRegime {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub enum Crowding {
     LongCrowded,
     ShortCrowded,
@@ -74,7 +74,7 @@ pub struct Input<'a> {
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub struct Regime {
     pub trend: Option<TrendRegime>,
     pub vol: Option<VolRegime>,

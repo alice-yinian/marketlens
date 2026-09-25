@@ -4,7 +4,7 @@
  * 启动时查一次 `bootstrap_state`（密钥库是否存在 / 是否已解锁 / 引导是否完成 / 标的集）：
  * - `!onboarding_done`            → 引导页（完整 3 步）；
  * - `onboarding_done && !unlocked` → 引导页（只显示第 1 步的解锁形态），解锁后直接进主界面；
- * - `onboarding_done && unlocked`  → 主界面（顶部标签切换「实盘」/「账户」）。
+ * - `onboarding_done && unlocked`  → 主界面（顶部标签切换「实盘」/「账户」/「复盘」）。
  *
  * 引导第 1 步解锁成功后**不能**立刻回写缓存：那会让顶层误判为「已解锁」而跳过第 2、3 步。
  * 只有整段引导走完（或解锁形态完成）才更新缓存。
@@ -16,6 +16,7 @@ import { AccountPage } from "./features/account/AccountPage";
 import { ErrorPanel } from "./features/account/ErrorPanel";
 import { LivePage } from "./features/live/LivePage";
 import { OnboardingPage } from "./features/onboarding/OnboardingPage";
+import { ReviewPage } from "./features/review/ReviewPage";
 import { call } from "./lib/ipc";
 import { S } from "./lib/strings";
 import type { BootstrapState } from "./lib/types";
@@ -51,11 +52,12 @@ function VersionFooter() {
   );
 }
 
-type Tab = "live" | "account";
+type Tab = "live" | "account" | "review";
 
 const TABS: readonly { id: Tab; label: string }[] = [
   { id: "live", label: S.nav.live },
   { id: "account", label: S.nav.account },
+  { id: "review", label: S.nav.review },
 ];
 
 function MainShell({
@@ -67,6 +69,26 @@ function MainShell({
   onSelectTab: (tab: Tab) => void;
   onConfigure: () => void;
 }) {
+  // 惰性挂载 + 保持挂载：页面首次访问后不再卸载。
+  //
+  // 之前用的是条件渲染（`tab === "live" ? <LivePage/> : ...`），切走再切回会
+  // 让页面重新挂载——实测后果是「切到实盘看一眼再回来，复盘的计划与采集结果
+  // 全没了」。保持挂载解决了它，同时**不破坏「按需采集」**：没访问过的标签
+  // 仍然不会挂载，所以启动时不会偷偷多发请求。
+  const [visited, setVisited] = useState<Record<Tab, boolean>>(() => ({
+    live: tab === "live",
+    account: tab === "account",
+    review: tab === "review",
+  }));
+
+  const selectTab = (next: Tab) => {
+    setVisited((prev) => ({ ...prev, [next]: true }));
+    onSelectTab(next);
+  };
+
+  const panel = (id: Tab, node: React.ReactNode) =>
+    visited[id] ? <div className={tab === id ? "" : "hidden"}>{node}</div> : null;
+
   return (
     <div className="flex min-h-full flex-col">
       <nav className="flex items-center gap-1 border-b border-neutral-900 px-4 sm:px-6">
@@ -74,7 +96,7 @@ function MainShell({
           <button
             key={item.id}
             type="button"
-            onClick={() => onSelectTab(item.id)}
+            onClick={() => selectTab(item.id)}
             className={`-mb-px border-b-2 px-4 py-2.5 text-sm font-medium ${
               tab === item.id
                 ? "border-neutral-100 text-neutral-100"
@@ -93,7 +115,9 @@ function MainShell({
         </button>
       </nav>
       <div className="flex-1">
-        {tab === "live" ? <LivePage /> : <AccountPage onConfigure={onConfigure} />}
+        {panel("live", <LivePage />)}
+        {panel("account", <AccountPage onConfigure={onConfigure} />)}
+        {panel("review", <ReviewPage />)}
       </div>
     </div>
   );

@@ -7,6 +7,7 @@
  * 新增命令 = 在 Commands 映射表里加一行，不需要再写包装函数。
  */
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
   AccountSnapshot,
@@ -14,7 +15,10 @@ import type {
   BootstrapState,
   CredentialMeta,
   CredentialProbe,
+  ExecutionReport,
+  FetchPlan,
   LiveSnapshot,
+  Progress,
   VaultStatus,
   WatchlistCandidate,
 } from "./types";
@@ -33,6 +37,19 @@ export interface SaveCredentialInput {
   passphrase: string;
   /** true = 模拟盘（请求需带 `x-simulated-trading: 1`） */
   demo: boolean;
+}
+
+/**
+ * `review_plan` 的入参（对应 Rust 的 `PlanRequest`）。
+ *
+ * `from` / `to` 是 Unix 毫秒。`bar` 缺省 `1H`；`inst_ids` 缺省用当前关注列表。
+ * 生成计划**不联网**，只做校验与估算。
+ */
+export interface ReviewPlanRequest {
+  from: number;
+  to: number;
+  bar?: string | null;
+  inst_ids?: string[] | null;
 }
 
 /** 命令名 → { 入参, 出参 } 的单一事实来源 */
@@ -70,6 +87,13 @@ export interface Commands {
   watchlist_set: { args: { watchlist: string[] }; result: string[] };
   /** 引导第 3 步的候选标的（按 24h 成交额降序的 Top 20） */
   watchlist_candidates: { args: undefined; result: WatchlistCandidate[] };
+
+  /** 生成复盘采集计划。**不联网**，只做校验与估算（`RangeTooLarge` 拒绝超 90 天） */
+  review_plan: { args: { request: ReviewPlanRequest }; result: FetchPlan };
+  /** 执行采集计划；一直等到结束（或被取消）才返回，进度走 `fetch://progress` 事件 */
+  review_fetch: { args: { plan_id: string }; result: ExecutionReport };
+  /** 取消正在执行的计划；`false` 表示它已经结束了 */
+  review_cancel: { args: { plan_id: string }; result: boolean };
 }
 
 /**
@@ -81,4 +105,20 @@ export function call<K extends keyof Commands>(
   args?: Commands[K]["args"],
 ): Promise<Commands[K]["result"]> {
   return invoke<Commands[K]["result"]>(cmd, args as Record<string, unknown> | undefined);
+}
+
+/**
+ * 采集进度事件名。必须与 Rust `commands/review.rs` 的 `PROGRESS_EVENT` 一致。
+ */
+export const FETCH_PROGRESS_EVENT = "fetch://progress";
+
+/**
+ * 订阅采集进度事件。返回取消订阅函数（组件卸载时必须调用）。
+ *
+ * 这是事件的唯一出口：组件不得自己 import `@tauri-apps/api/event`。
+ * 调用方负责按 `Progress.plan_id` 过滤——同一个应用里可能只有一个采集在跑，
+ * 但事件是全局广播，过滤放在消费侧才不会漏掉迟到的订阅。
+ */
+export function onFetchProgress(handler: (progress: Progress) => void): Promise<UnlistenFn> {
+  return listen<Progress>(FETCH_PROGRESS_EVENT, (event) => handler(event.payload));
 }

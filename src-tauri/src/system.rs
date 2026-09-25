@@ -6,7 +6,7 @@ use ts_rs::TS;
 /// M0 验收要求「双端可启动并显示版本号」，这个结构体就是那条验收路径的载荷：
 /// 它同时证明 IPC 通道可用（前端拿到了它）与迁移已执行（`schema_version` 非 0）。
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub struct AppInfo {
     /// 来自 tauri.conf.json —— 版本号的唯一来源（设计文档 §14）
     pub app_version: String,

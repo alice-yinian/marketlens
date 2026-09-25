@@ -46,6 +46,20 @@ fn one() -> f64 {
     1.0
 }
 
+/// `GET /api/v5/public/funding-rate-history`
+///
+/// 与 Rubik 不同，这个端点返回**对象数组**而不是字符串数组，所以有独立的模型。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FundingRateHistory {
+    pub inst_id: String,
+    #[serde(deserialize_with = "de::num")]
+    pub funding_rate: f64,
+    /// 结算时间（Unix 毫秒），分页游标就用它
+    #[serde(deserialize_with = "de::ts")]
+    pub funding_time: i64,
+}
+
 /// `GET /api/v5/account/config`
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

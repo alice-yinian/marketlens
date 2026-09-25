@@ -11,7 +11,7 @@ use ts_rs::TS;
 /// 刻意保留 `contracts`（张数）与 `size_base`（币数量）两个字段：它们在不同场景下
 /// 都有用，且换算过程容易出错——把两者都摆出来，界面和复盘都能一眼看出是否合理。
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub struct Position {
     pub inst_id: String,
     pub pos_id: String,
@@ -45,7 +45,7 @@ pub struct Position {
 
 /// 账户权益概览。
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub struct AccountOverview {
     /// 账户总权益（USD）
     pub total_eq_usd: f64,
@@ -66,7 +66,7 @@ pub struct AccountOverview {
 
 /// 单币种余额（只保留界面需要的字段）。
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub struct CurrencyBalance {
     pub ccy: String,
     pub eq: f64,
@@ -77,7 +77,7 @@ pub struct CurrencyBalance {
 
 /// 一次账户刷新结果。
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub struct AccountSnapshot {
     pub overview: AccountOverview,
     pub positions: Vec<Position>,

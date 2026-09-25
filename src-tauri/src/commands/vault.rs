@@ -9,7 +9,7 @@ use crate::vault::Vault;
 
 /// 密钥库状态。界面据此决定进入「创建」还是「解锁」。
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub struct VaultStatus {
     /// 密钥库文件是否已存在
     pub exists: bool,

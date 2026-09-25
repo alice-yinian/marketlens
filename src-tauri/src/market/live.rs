@@ -30,7 +30,7 @@ const CANDLE_LIMIT: &str = "300";
 
 /// 单标的的完整市场状态。
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub struct MarketState {
     pub inst_id: String,
     #[ts(type = "number")]
@@ -79,7 +79,7 @@ struct CurrencyStats {
 
 /// 一次实盘刷新结果。
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub struct LiveSnapshot {
     #[ts(type = "number")]
     pub ts: i64,

@@ -30,7 +30,7 @@ pub async fn app_info(app: AppHandle, db: State<'_, Db>) -> AppResult<AppInfo> {
 /// 这一个决策；分开调用会出现「解锁状态已知、引导标志还没到」的中间态，
 /// 界面就会闪一下错误的页面。
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub struct BootstrapState {
     /// 密钥库文件是否已存在
     pub vault_exists: bool,

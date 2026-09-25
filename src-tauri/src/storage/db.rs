@@ -6,7 +6,13 @@ use tauri::{AppHandle, Manager};
 
 use crate::credentials::CredentialMeta;
 use crate::error::{AppError, AppResult};
+use crate::market::Candle;
 use crate::position::trace::TraceRow;
+
+/// 超过这个「年龄」的时序点视为已定型。
+///
+/// 取 10 分钟：比 Rubik 的 5 分钟粒度略长，足以覆盖交易所对最近几个点的修订。
+const FINALIZED_AFTER_MS: i64 = 10 * 60 * 1000;
 
 /// 数据库句柄。
 ///
@@ -171,6 +177,134 @@ impl Db {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    // ---- 采集计划：续传状态与序列落库 --------------------------------------
+
+    /// 某条序列上次的状态。`None` 表示从未采集过。
+    pub async fn fetch_state_status(&self, key: &str) -> AppResult<Option<String>> {
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM fetch_state WHERE series_key = ?")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(status)
+    }
+
+    /// 记录某条序列的状态。
+    pub async fn mark_fetch_state(
+        &self,
+        key: &str,
+        status: &str,
+        error: Option<&str>,
+    ) -> AppResult<()> {
+        sqlx::query(
+            "INSERT INTO fetch_state (series_key, status, error, updated_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(series_key) DO UPDATE SET
+                status = excluded.status,
+                error = excluded.error,
+                updated_at = excluded.updated_at",
+        )
+        .bind(key)
+        .bind(status)
+        .bind(error)
+        .bind(crate::storage::now_ms())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 写入 K 线。
+    ///
+    /// `confirm = 1`（已收盘）的 K 线**永不再变**，是 ADR #12「已定型数据永久缓存」的
+    /// 直接体现；未收盘的那根会被后续刷新覆盖。
+    pub async fn insert_candles(
+        &self,
+        inst_id: &str,
+        kind: &str,
+        bar: &str,
+        candles: &[Candle],
+    ) -> AppResult<()> {
+        let mut tx = self.pool.begin().await?;
+
+        for candle in candles {
+            sqlx::query(
+                "INSERT OR REPLACE INTO candles
+                    (inst_id, kind, bar, ts, open, high, low, close, vol, confirm)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(inst_id)
+            .bind(kind)
+            .bind(bar)
+            .bind(candle.ts)
+            .bind(candle.open)
+            .bind(candle.high)
+            .bind(candle.low)
+            .bind(candle.close)
+            .bind(candle.vol)
+            .bind(i64::from(candle.confirm))
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 写入时序指标。
+    ///
+    /// 只有**距今足够久**的点才标记为已定型。近期的点仍可能被交易所修订，
+    /// 标成永久会让「刷新」永远拿不到修正值。
+    pub async fn insert_metric_series(
+        &self,
+        inst_id: &str,
+        metric: &str,
+        points: &[(i64, f64)],
+    ) -> AppResult<()> {
+        let finalized_cutoff = crate::storage::now_ms() - FINALIZED_AFTER_MS;
+        let mut tx = self.pool.begin().await?;
+
+        for (ts, value) in points {
+            sqlx::query(
+                "INSERT OR REPLACE INTO metric_series (inst_id, metric, ts, value, finalized)
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(inst_id)
+            .bind(metric)
+            .bind(ts)
+            .bind(value)
+            .bind(i64::from(*ts < finalized_cutoff))
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 仅测试用：统计某标的某类 K 线的条数。
+    ///
+    /// 刻意加在 `Db` 上而不是让测试直接拿连接池——「前端拿不到 SQL」这条边界
+    /// 连测试也不该破例，否则将来很容易被顺手放宽。
+    #[cfg(test)]
+    pub async fn count_candles(&self, inst_id: &str, kind: &str) -> AppResult<i64> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM candles WHERE inst_id = ? AND kind = ?")
+                .bind(inst_id)
+                .bind(kind)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(count)
+    }
+
+    /// 仅测试用：统计某序列的状态记录数。
+    #[cfg(test)]
+    pub async fn count_fetch_states(&self) -> AppResult<i64> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM fetch_state")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(count)
     }
 
     // ---- 本地留痕 ---------------------------------------------------------

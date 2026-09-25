@@ -54,6 +54,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let y: i16 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(0);
             click(&conn, x, y)?;
         }
+        "scroll" => {
+            let count: usize = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(3);
+            scroll(&conn, count)?;
+        }
         other => {
             eprintln!("未知子命令：{other}");
             std::process::exit(2);
@@ -124,6 +128,33 @@ fn click(conn: &RustConnection, x: i16, y: i16) -> Result<(), Box<dyn std::error
     conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_RELEASE_EVENT, 1, 0, NONE, 0, 0, 0)?;
     conn.flush()?;
     sleep(Duration::from_millis(120));
+    Ok(())
+}
+
+/// 滚轮滚动。指针需要先位于可滚动区域上方。
+///
+/// X11 的滚轮是鼠标按钮 4（上）/ 5（下），不是独立事件类型。
+fn scroll(conn: &RustConnection, count: usize) -> Result<(), Box<dyn std::error::Error>> {
+    // 先把指针移到窗口中部，否则滚动会落在指针当前位置的元素上
+    conn.xtest_fake_input(
+        x11rb::protocol::xproto::MOTION_NOTIFY_EVENT,
+        0,
+        0,
+        NONE,
+        680,
+        500,
+        0,
+    )?;
+    conn.flush()?;
+    sleep(Duration::from_millis(100));
+
+    for _ in 0..count {
+        conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_PRESS_EVENT, 5, 0, NONE, 0, 0, 0)?;
+        conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_RELEASE_EVENT, 5, 0, NONE, 0, 0, 0)?;
+        conn.flush()?;
+        sleep(Duration::from_millis(80));
+    }
+    sleep(Duration::from_millis(300));
     Ok(())
 }
 

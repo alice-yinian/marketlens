@@ -23,7 +23,7 @@ const GAP_THRESHOLD_MS: i64 = 30 * 60 * 1000;
 
 /// 留痕覆盖度。随每次刷新一起返回。
 #[derive(Debug, Clone, Serialize, TS)]
-#[ts(export, export_to = "types.ts")]
+#[ts(export_to = "types.ts")]
 pub struct TraceCoverage {
     /// 最近 30 天内的留痕条数
     #[ts(type = "number")]

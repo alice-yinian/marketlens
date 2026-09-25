@@ -117,6 +117,7 @@ export const S = {
   nav: {
     live: "实盘",
     account: "账户",
+    review: "复盘",
     configure: "重新配置",
   },
 
@@ -299,6 +300,105 @@ export const S = {
     errorNotRetryable: "该错误重试无法自愈，请检查配置或网络环境。",
     refreshFailedTitle: "刷新失败",
     refreshFailedHint: "下方仍展示上一次成功拉取的数据。",
+  },
+
+  // 复盘采集页（M3）
+  review: {
+    title: "复盘采集",
+    subtitle: "先看预估与可得性，再开始采集",
+
+    // 时段与粒度
+    range: {
+      title: "时段与粒度",
+      from: "开始时间",
+      to: "结束时间",
+      quick: "快捷时段",
+      last24h: "最近 24 小时",
+      last7d: "最近 7 天",
+      last30d: "最近 30 天",
+      bar: "K 线粒度",
+      maxRangeNote: "时段上限 90 天：超出后无法生成计划（不会自动截断时段）。",
+      tooLarge: "当前时段超过 90 天上限。请缩小范围——本工具不会静默截断时段。",
+      orderInvalid: "结束时间必须晚于开始时间。",
+      invalid: "请选择有效的开始与结束时间。",
+      rangeDays: (days: number) => `当前约 ${days} 天`,
+    },
+
+    // 计划预估
+    plan: {
+      title: "采集计划预估",
+      offlineNote: "生成计划不联网，只做校验与估算。",
+      generate: "生成计划",
+      generating: "生成中…",
+      estRequests: "预估请求数",
+      estRequestsValue: (n: number) => `${n} 个`,
+      estDuration: "预估耗时",
+      insts: "标的集",
+      instsCount: (n: number) => `${n} 个标的`,
+      barLabel: "粒度",
+      seriesCount: (n: number) => `共 ${n} 条序列`,
+      warningsTitle: "可得性提示：以下数据无法获取",
+      warningsHint: "这些指标在本时段内拿不到，界面上会如实标注，不会留空。",
+      start: "开始采集",
+    },
+
+    // 进度
+    progress: {
+      title: "采集进行中",
+      seriesProgress: (done: number, total: number) => `已完成 ${done} / ${total} 条序列`,
+      current: (label: string) => `正在拉取：${label}`,
+      requests: (done: number, total: number) => `请求 ${done} / ${total}`,
+      starting: "正在启动…",
+      cancel: "取消",
+      cancelling: "取消中…",
+      cancelRequested: "已请求取消，等待当前请求结束…",
+      cancelAlreadyDone: "该计划已结束。",
+    },
+
+    // 采集结果
+    report: {
+      title: "采集结果",
+      elapsed: (text: string) => `耗时 ${text}`,
+      doneRequests: (n: number) => `共完成 ${n} 个请求`,
+      cancelled: "已取消：已完成的序列已保存，再次采集会跳过它们。",
+      rows: "行数",
+      pages: "页数",
+    },
+
+    // 序列种类（Rust 变体名 → 中文）
+    seriesKind: {
+      Candles: "K 线",
+      MarkCandles: "标记价 K 线",
+      IndexCandles: "指数价 K 线",
+      FundingRate: "资金费率",
+      LongShortRatio: "多空账户比",
+      TakerVolume: "主动买卖量",
+    },
+
+    // 序列状态（Rust 变体名 → 中文；四态视觉各异）
+    status: {
+      Ok: "正常",
+      Unavailable: "不可得",
+      Failed: "失败",
+      Skipped: "已跳过（上次已完成）",
+    },
+
+    // 时长（预估与实测共用）
+    duration: {
+      underSecond: "不足 1 秒",
+      seconds: (n: number) => `约 ${n} 秒`,
+      minutes: (n: number) => `约 ${n} 分钟`,
+    },
+
+    // 错误态
+    errors: {
+      planTitle: "生成计划失败",
+      fetchTitle: "采集失败",
+      rangeTooLargeTitle: "时段超出上限",
+      rangeTooLarge:
+        "时段最多 90 天。请缩小范围后重试——本工具不会静默截断时段。",
+      retry: "重试",
+    },
   },
 
   // 页脚：紧凑的版本信息（M0 验收路径，保留为常驻诊断信息）
