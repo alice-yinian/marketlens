@@ -1640,6 +1640,21 @@ CI 会依次：三个平台全部构建成功 → 校验 tag 与版本号一致 
 推 main 就发版会攒出几十个无意义的 Release，而用户真正想知道的是
 「**这一版能装的东西在哪**」。tag 是「这是一个版本」的显式声明，语义准确。
 
+#### 用草稿 Release 中转，而不是 artifact
+
+各平台 job 在构建成功后**直接把自己的安装包传进一个草稿 Release**，
+最后由 `release` job 校验资产齐全、写入说明、发布。
+
+两个原因：
+
+1. **私有仓库的 artifact 走存储配额**。配额耗尽时整个 job 会失败
+   （实测报 `Artifact storage quota has been hit`），而 **Release 资产不占这个配额**。
+2. **草稿天然满足「三端全成才发布」**：在三端都传完之前，用户根本看不到这个 Release。
+   这比「先传 artifact 再由 release job 下载合并」更直接，也少一次搬运。
+
+非 tag 构建仍然传 artifact（便于调试），但配额耗尽不会让一次成功的构建变红
+（`continue-on-error: true`）。
+
 #### 三个刻意的设计
 
 1. **`needs: [check, windows, android]`**——三个平台的产物都成功才发布。
