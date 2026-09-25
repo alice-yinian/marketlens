@@ -651,7 +651,7 @@ mod tests {
             "方向必须取自 direction —— 只看 posSide 会把多空混为一谈"
         );
         assert_eq!(closed.inst_id, "SOL-USDT-SWAP");
-        assert!((closed.open_avg_px - 117.4633466666666668).abs() < 1e-9);
+        assert!((closed.open_avg_px - 117.46334666666667).abs() < 1e-9);
         assert!((closed.close_avg_px - 117.45).abs() < 1e-9);
         assert!((closed.open_max_pos - 15.0).abs() < 1e-9);
 
