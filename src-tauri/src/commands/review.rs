@@ -159,11 +159,11 @@ pub async fn review_context(
     }
 
     let bar = request.bar.unwrap_or_else(|| "1H".to_string());
+    let credentials = crate::credentials::credentials_for(&vault, &request.credential_id)?;
     crate::review::build_context(
         &client,
         &db,
-        &vault,
-        &request.credential_id,
+        Some(&credentials),
         request.from,
         request.to,
         &bar,

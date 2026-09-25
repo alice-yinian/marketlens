@@ -96,8 +96,12 @@ mod tests {
     use crate::fetch::plan::{AvailabilityNote, FetchPlan, SeriesKind, SeriesPlan};
     use crate::market::live::{LiveSnapshot, MarketState};
     use crate::market::regime::{Crowding, Regime, TrendRegime, VolRegime};
+    use crate::position::history::{ClosedPosition, RegimeSnapshot};
+    use crate::position::merge::MergeReport;
+    use crate::position::stats::{ReviewStats, StatGroup};
     use crate::position::trace::TraceCoverage;
     use crate::position::{AccountOverview, AccountSnapshot, CurrencyBalance, Position};
+    use crate::review::ReviewContext;
     use crate::system::AppInfo;
 
     /// 去掉 TS 源码里的块注释。
@@ -185,6 +189,12 @@ mod tests {
             AvailabilityNote,
             Progress,
             ExecutionReport,
+            ClosedPosition,
+            RegimeSnapshot,
+            ReviewStats,
+            StatGroup,
+            MergeReport,
+            ReviewContext,
         );
 
         let mut output = String::from(
