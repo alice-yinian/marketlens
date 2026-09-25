@@ -10,8 +10,8 @@
 ## 交易清单
 
 {% for p in positions %}
-{{ loop.index }}. {{ p.open_time | ts }}｜{{ p.inst_id }}｜{{ p.direction | side }} {{ p.leverage }}×｜
-   开 {{ p.open_price }} → 平 {{ p.close_price }}｜{{ p.realized_pnl | money }}（{{ p.pnl_ratio | pct }}）｜
+{{ loop.index }}. {{ p.open_time | ts }}｜{{ p.inst_id }}｜{{ p.direction | side }} {{ p.leverage | num(0) }}×｜
+   开 {{ p.open_price | price }} → 平 {{ p.close_price | price }}｜{{ p.realized_pnl | money }}（{{ p.pnl_ratio | pct }}）｜
    持仓 {{ p.hold_ms | dur }}｜开仓时状态：{% if p.regime %}{{ p.regime.trend | na("不可得") }}/{{ p.regime.volatility | na("不可得") }}/{{ p.regime.crowding | na("不可得") }}{% else %}不可得{% endif %}
 {% endfor %}
 

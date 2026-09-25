@@ -15,20 +15,20 @@
 {% for m in market %}
 ### {{ m.inst_id }}
 
-- 最新价：{{ m.last }}
+- 最新价：{{ m.last | price }}
 - 24h 涨跌：{{ m.change_24h_pct | pct }}
-- 24h 区间：{{ m.low_24h }} – {{ m.high_24h }}
+- 24h 区间：{{ m.low_24h | price }} – {{ m.high_24h | price }}
 - 24h 成交额：{{ m.volume_24h_usd | usd }}
 - 趋势：{{ m.trend | na("K 线不足，无法判定") }}
 - 波动：{{ m.volatility | na("K 线不足，无法判定") }}
 - 拥挤度：{{ m.crowding }}
-- RSI14：{{ m.rsi14 | na("K 线不足") }}
+- RSI14：{{ m.rsi14 | na("K 线不足") | num(2) }}
 - ATR：{{ m.atr_pct | na("K 线不足") | pct }}
 - 已实现波动：{{ m.realized_vol | na("K 线不足") | pct }}
 - 资金费率年化：{{ m.funding_annualized | pct }}
 - 基差：{{ m.basis_pct | na("无基差数据") | pct }}
-- 多空比：{{ m.long_short_ratio | na("Rubik 指标不可得") }}
-- 主动买卖比：{{ m.taker_buy_sell_ratio | na("Rubik 指标不可得") }}
+- 多空比：{{ m.long_short_ratio | na("Rubik 指标不可得") | num(2) }}
+- 主动买卖比：{{ m.taker_buy_sell_ratio | na("Rubik 指标不可得") | num(3) }}
 - 持仓量：{{ m.open_interest_usd | na("接口未返回") | usd }}
 {% if m.signals %}
 
@@ -49,7 +49,7 @@
 {% if account.available %}
 账户权益：{{ account.equity | money }}（量级 {{ account.equity_magnitude }}）
 未实现盈亏：{{ account.unrealized_pnl | money }}
-保证金率：{{ account.margin_ratio | na("接口未返回") }}
+保证金率：{{ account.margin_ratio | na("接口未返回") | num(2) }}
 持仓模式：{{ account.position_mode | na("未知") }}
 {% else %}
 账户数据不可得：{{ account.reason }}
@@ -62,14 +62,14 @@
 ### {{ p.inst_id }}
 
 - 方向：{{ p.pos_side | side }}
-- 杠杆：{{ p.leverage }}×（{{ p.margin_mode }}）
+- 杠杆：{{ p.leverage | num(0) }}×（{{ p.margin_mode | margin }}）
 - 数量：{{ p.contracts | size }} 张
-- 开仓均价：{{ p.avg_price }}
-- 标记价：{{ p.mark_price }}
-- 强平价：{{ p.liquidation_price | na("全仓或无强平价") }}
+- 开仓均价：{{ p.avg_price | price }}
+- 标记价：{{ p.mark_price | price }}
+- 强平价：{{ p.liquidation_price | na("全仓或无强平价") | price }}
 - 名义价值：{{ p.notional | money }}
 - 未实现盈亏：{{ p.unrealized_pnl | money }}（{{ p.unrealized_pnl_ratio | pct }}）
-- 保证金率：{{ p.margin_ratio | na("接口未返回") }}
+- 保证金率：{{ p.margin_ratio | na("接口未返回") | num(2) }}
 - 持仓时长：{{ (p.updated_at - p.created_at) | dur }}
 {% endfor %}
 {% endif %}

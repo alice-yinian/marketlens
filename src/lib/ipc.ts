@@ -18,8 +18,12 @@ import type {
   ExecutionReport,
   FetchPlan,
   LiveSnapshot,
+  PrivacyLevel,
   Progress,
+  PromptOutput,
+  PromptTemplate,
   ReviewContext,
+  TemplateKind,
   VaultStatus,
   WatchlistCandidate,
 } from "./types";
@@ -61,6 +65,49 @@ export interface ReviewPlanRequest {
  */
 export interface ReviewContextRequest {
   credential_id: string;
+  from: number;
+  to: number;
+  bar?: string | null;
+}
+
+/**
+ * `template_save` 的入参（对应 Rust 的 `SaveTemplateRequest`）。
+ *
+ * `id` 为空、或指向内置模板时 → 新建（「另存为」语义，后端生成新 id）；
+ * 否则覆盖同一条用户模板。内置模板**永远不可覆盖**。
+ */
+export interface SaveTemplateRequest {
+  id?: string | null;
+  name: string;
+  description?: string | null;
+  kind: TemplateKind;
+  body: string;
+}
+
+/**
+ * `prompt_build_live` 的入参（对应 Rust 的 `BuildLiveRequest`）。
+ *
+ * `body` 优先于 `template_id`：编辑器未保存的正文走这里实时预览。
+ * `privacy` 缺省 L1；`force` 绕过行情 30 秒缓存。
+ */
+export interface BuildLiveRequest {
+  template_id?: string | null;
+  body?: string | null;
+  privacy?: PrivacyLevel | null;
+  credential_id?: string | null;
+  force?: boolean | null;
+}
+
+/**
+ * `prompt_build_review` 的入参（对应 Rust 的 `BuildReviewRequest`）。
+ *
+ * 会先同步官方历史仓位，首次可能慢几秒；时段上限 90 天（超限 `RangeTooLarge`）。
+ */
+export interface BuildReviewRequest {
+  template_id?: string | null;
+  body?: string | null;
+  privacy?: PrivacyLevel | null;
+  credential_id?: string | null;
   from: number;
   to: number;
   bar?: string | null;
@@ -116,6 +163,18 @@ export interface Commands {
    * 与采集刻意分开：改了统计口径只需重新装配，不必重新拉数据。
    */
   review_context: { args: { request: ReviewContextRequest }; result: ReviewContext };
+
+  // ---- M5 提示词 ----
+  /** 列出全部模板：内置在前，用户模板在后 */
+  template_list: { args: undefined; result: PromptTemplate[] };
+  /** 保存模板；`id` 为空或指向内置模板时按「另存为」新建 */
+  template_save: { args: { request: SaveTemplateRequest }; result: PromptTemplate };
+  /** 删除用户模板；内置模板不可删除（后端会明确报错） */
+  template_delete: { args: { id: string }; result: void };
+  /** 生成实盘提示词；命中行情 30 秒缓存则不重复请求 */
+  prompt_build_live: { args: { request: BuildLiveRequest }; result: PromptOutput };
+  /** 生成复盘提示词；会先同步官方历史仓位，首次可能慢几秒 */
+  prompt_build_review: { args: { request: BuildReviewRequest }; result: PromptOutput };
 }
 
 /**

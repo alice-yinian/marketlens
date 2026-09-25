@@ -270,3 +270,118 @@ mod golden {
         }
     }
 }
+
+#[cfg(test)]
+mod real_data {
+    //! 真机联网测试：**真实数据**走通「装配 → 隐私分级 → 渲染」。
+    //!
+    //! 夹具测试证明不了「真实金额不会泄漏」——因为夹具里的金额是我自己选的、
+    //! 我知道它们长什么样。这里用真实账户权益做断言：
+    //! 在 L0 里把它找出来，再断言 L1/L2 的输出里没有它。
+
+    use super::*;
+    use crate::prompt::context;
+    use crate::prompt::filters::format_usd;
+    use crate::prompt::privacy::PrivacyLevel;
+    use crate::prompt::render::render;
+
+    #[tokio::test]
+    #[ignore = "访问真实 OKX 私有端点，需显式提供凭据"]
+    async fn real_account_amounts_never_leak_below_l0() {
+        use crate::market::live::LiveSnapshot;
+        use crate::okx::credentials::Credentials;
+
+        let credentials = Credentials {
+            api_key: std::env::var("MARKETLENS_TEST_API_KEY")
+                .expect("缺少 MARKETLENS_TEST_API_KEY"),
+            secret_key: std::env::var("MARKETLENS_TEST_SECRET_KEY")
+                .expect("缺少 MARKETLENS_TEST_SECRET_KEY"),
+            passphrase: std::env::var("MARKETLENS_TEST_PASSPHRASE")
+                .expect("缺少 MARKETLENS_TEST_PASSPHRASE"),
+            demo: true,
+        };
+
+        let client = crate::okx::client::OkxClient::new().expect("客户端构造失败");
+        let db = crate::storage::Db::open_in_memory()
+            .await
+            .expect("内存库创建失败");
+
+        let watchlist = vec!["BTC-USDT-SWAP".to_string(), "ETH-USDT-SWAP".to_string()];
+        let (instruments, warnings) = crate::market::live::fetch_snapshot(&client, &watchlist)
+            .await
+            .expect("行情拉取失败");
+        let now = crate::storage::now_ms();
+        let snapshot = LiveSnapshot {
+            ts: now,
+            cache_hit: false,
+            fetched_at: now,
+            watchlist,
+            instruments,
+            warnings,
+        };
+
+        let account = crate::position::current::fetch(&client, &db, &credentials)
+            .await
+            .expect("账户拉取失败");
+
+        // L0 下必须能看见真实权益的格式化形式（否则后面的「不存在」断言毫无意义）
+        let equity_text = format_usd(account.overview.total_eq_usd);
+        let l0 = context::live(
+            &snapshot,
+            Some(&account.overview),
+            Some(&account.positions),
+            PrivacyLevel::L0,
+            None,
+        )
+        .context;
+        let l0_text =
+            render(&builtin("live_quick").expect("内置模板存在").body, &l0).expect("L0 渲染失败");
+        assert!(
+            l0_text.contains(&equity_text),
+            "L0 里应当能看到真实权益 {equity_text}——看不到说明这个断言本身失效了"
+        );
+
+        for level in [PrivacyLevel::L1, PrivacyLevel::L2] {
+            let assembled = context::live(
+                &snapshot,
+                Some(&account.overview),
+                Some(&account.positions),
+                level,
+                None,
+            );
+            for template in builtins().iter().filter(|t| t.kind == TemplateKind::Live) {
+                let output = render(&template.body, &assembled.context).unwrap_or_else(|err| {
+                    panic!("{} 在 {} 下渲染失败：{err}", template.id, level.as_str())
+                });
+
+                assert!(
+                    !output.contains(&equity_text),
+                    "{} 在 {} 下泄漏了真实权益 {equity_text}",
+                    template.id,
+                    level.as_str()
+                );
+                assert!(
+                    !output.contains("$"),
+                    "{} 在 {} 下出现了美元金额——L1/L2 不该有任何 $ 开头的数字",
+                    template.id,
+                    level.as_str()
+                );
+            }
+
+            println!("--- {} 装配问题：{:?}", level.as_str(), assembled.warnings);
+        }
+
+        // 顺带把 L1 的真实渲染结果打出来，便于人工确认可读性
+        let l1 = context::live(
+            &snapshot,
+            Some(&account.overview),
+            Some(&account.positions),
+            PrivacyLevel::L1,
+            None,
+        )
+        .context;
+        let l1_text =
+            render(&builtin("live_quick").expect("内置模板存在").body, &l1).expect("L1 渲染失败");
+        println!("===== L1 真实渲染 =====\n{l1_text}\n===== 结束 =====");
+    }
+}

@@ -118,6 +118,7 @@ export const S = {
     live: "实盘",
     account: "账户",
     review: "复盘",
+    prompt: "提示词",
     configure: "重新配置",
   },
 
@@ -499,6 +500,135 @@ export const S = {
         "时段最多 90 天。请缩小范围后重试——本工具不会静默截断时段。",
       assembleRangeTooLarge:
         "装配时段最多 90 天。请缩小范围后重试——本工具不会静默截断时段。",
+      retry: "重试",
+    },
+  },
+
+  // 提示词页（M5）：模板库 + 隐私分级 + 编辑器 + 实时预览 + 导出
+  prompt: {
+    title: "提示词",
+    subtitle: "选模板 · 控隐私 · 预览后复制或导出",
+
+    // 模板库
+    templates: {
+      title: "模板库",
+      loading: "正在读取模板…",
+      empty: "没有可用模板。",
+      error: "模板列表读取失败。",
+      retry: "重试",
+      builtinBadge: "内置",
+      userBadge: "自定义",
+      kindLive: "实盘",
+      kindReview: "复盘",
+      builtinNote: "内置模板由应用维护，升级时会被更新；改动请用「另存为」。",
+    },
+
+    // 隐私等级（本页最重要的控件）
+    privacy: {
+      title: "隐私等级",
+      enforcedNote:
+        "隐私分级在后端强制生效：无论模板怎么写，都无法绕过它把金额带进提示词。切等级会立即重新生成预览。",
+      current: (label: string) => `当前：${label}`,
+      L0: { label: "L0 · 全量", desc: "完整金额与数量都会进入提示词" },
+      L1: { label: "L1 · 百分比（默认）", desc: "金额转成占账户权益的百分比，权益只给量级区间" },
+      L2: { label: "L2 · 脱敏", desc: "只保留方向、杠杆与市场状态，不含任何金额与数量" },
+    },
+
+    // 模板编辑器
+    editor: {
+      title: "模板编辑器",
+      name: "模板名称",
+      namePlaceholder: "例如：我的实盘速览",
+      description: "说明（可选）",
+      descriptionPlaceholder: "一句话说明这个模板问什么",
+      body: "模板正文",
+      builtinHint: "内置模板不可直接保存，改动请用「另存为」创建副本。",
+      dirty: "有未保存的改动",
+    },
+
+    // 保存 / 另存为 / 删除
+    actions: {
+      save: "保存",
+      saving: "保存中…",
+      saveAs: "另存为",
+      saveAsNote: "内置模板只能另存为：会以当前正文创建一个新的自定义模板。",
+      saveAsCopySuffix: "（副本）",
+      delete: "删除",
+      deleting: "删除中…",
+      deleteConfirm: "确认删除",
+      deleteCancel: "取消",
+      deleteConfirmNote: "删除后无法恢复。",
+      nameRequired: "模板名称不能为空。",
+      bodyRequired: "模板正文不能为空。",
+      saveFailed: "保存失败",
+      deleteFailed: "删除失败",
+    },
+
+    // 实盘 / 复盘上下文输入
+    context: {
+      liveTitle: "实盘上下文",
+      reviewTitle: "复盘上下文",
+      credential: "凭据",
+      noCredential: "不选择凭据（仅行情）",
+      credentialNote: "不选凭据时只有市场状态，账户与仓位会明确标注为「数据不可得」。",
+      credentialLoading: "正在读取凭据…",
+      credentialError: "凭据列表读取失败。",
+      force: "强制刷新（跳过行情 30 秒缓存）",
+      forceNote: "开启后每次重新生成都会重新联网拉取行情。",
+      rangeFrom: "开始时间",
+      rangeTo: "结束时间",
+      rangeBar: "K 线粒度",
+      quick: "快捷时段",
+      last7d: "最近 7 天",
+      last30d: "最近 30 天",
+      rangeDays: (days: number) => `当前约 ${days} 天`,
+      maxRangeNote: "时段上限 90 天。",
+      rangeTooLarge: "当前时段超过 90 天上限。请缩小范围——本工具不会静默截断时段。",
+      rangeOrder: "结束时间必须晚于开始时间。",
+      rangeInvalid: "请选择有效的开始与结束时间。",
+      needCredential: "复盘需要读取官方历史仓位，必须选择凭据。",
+    },
+
+    // 实时预览
+    preview: {
+      title: "预览",
+      firstLoading: "正在生成预览…",
+      refreshing: "正在按新设置重新生成…",
+      empty: "尚无预览。",
+      textTitle: "提示词正文",
+      tokens: (n: number) => `token 估算：${n}`,
+      chars: (n: number) => `字符数：${n}`,
+      tokenNote: "token 估算为保守高估（中文约 1 token/字，ASCII 约 4 字符/token）。",
+      warningsTitle: "生成过程中的问题",
+      warningsHint: "以下问题不致命，但说明提示词里可能缺少部分信息，请留意。",
+      errorTitle: "模板渲染失败",
+      errorHint: "请按上面的报错修改模板：变量名与语法位置都在消息里，这是唯一的线索。",
+      rangeTooLargeTitle: "时段超出上限",
+      generatedAt: (time: string) => `生成于 ${time}`,
+      templateName: (name: string) => `模板：${name}`,
+      unsavedName: "（未保存的模板）",
+    },
+
+    // 导出
+    export: {
+      title: "导出",
+      copy: "复制到剪贴板",
+      copied: "已复制",
+      copyFailed: "复制失败，请手动选择文本复制。",
+      saveFile: "保存为文件",
+      savedFile: (name: string) => `已保存：${name}`,
+      noPreview: "还没有可导出的内容。",
+      l0WarningTitle: "将包含完整金额",
+      l0Warning:
+        "当前为 L0（全量）：导出的提示词会包含完整金额与数量。确认导出？",
+      confirm: "确认导出",
+      cancel: "取消",
+    },
+
+    // 错误态
+    errors: {
+      listTitle: "模板列表读取失败",
+      buildTitle: "生成提示词失败",
       retry: "重试",
     },
   },

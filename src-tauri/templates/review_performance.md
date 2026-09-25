@@ -33,7 +33,7 @@
 | 标的 | 方向 | 杠杆 | 开仓价 | 平仓价 | 已实现盈亏 | 收益率 | 手续费 | 开仓时间 | 持仓时长 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 {% for p in positions %}
-| {{ p.inst_id }} | {{ p.direction | side }} | {{ p.leverage }}× | {{ p.open_price }} | {{ p.close_price }} | {{ p.realized_pnl | money }} | {{ p.pnl_ratio | pct }} | {{ p.fee | money }} | {{ p.open_time | ts }} | {{ p.hold_ms | dur }} |
+| {{ p.inst_id }} | {{ p.direction | side }} | {{ p.leverage | num(0) }}× | {{ p.open_price | price }} | {{ p.close_price | price }} | {{ p.realized_pnl | money }} | {{ p.pnl_ratio | pct }} | {{ p.fee | money }} | {{ p.open_time | ts }} | {{ p.hold_ms | dur }} |
 {% endfor %}
 
 ## 逐笔的开仓时刻状态

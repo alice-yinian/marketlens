@@ -26,11 +26,13 @@ pub fn register(environment: &mut minijinja::Environment<'static>) {
     environment.add_filter("usd_plain", filter_usd_plain);
     environment.add_filter("pct", filter_pct);
     environment.add_filter("num", filter_num);
+    environment.add_filter("price", filter_price);
     environment.add_filter("ts", filter_ts);
     environment.add_filter("ts_date", filter_ts_date);
     environment.add_filter("ago", filter_ago);
     environment.add_filter("dur", filter_dur);
     environment.add_filter("side", filter_side);
+    environment.add_filter("margin", filter_margin);
     environment.add_filter("money", filter_money);
     environment.add_filter("size", filter_size);
     environment.add_filter("table", filter_table);
@@ -86,6 +88,21 @@ fn filter_num(value: Value, precision: Option<usize>) -> Result<Value, Error> {
     Ok(Value::from(format!("{number:.precision$}")))
 }
 
+/// 价格：按量级自适应小数位。
+///
+/// 直接渲染 `f64` 会得到 `2718.7999999999997` 这种全精度输出——既难看，
+/// 又会让 AI 误以为精度真的到小数点后 16 位。但固定小数位也不行：
+/// BTC 要 2 位，DOGE 要 4 位，某些小币要 8 位。
+///
+/// 分档按主流交易所的报价精度来定，而不是按数学上的有效数字。
+fn filter_price(value: Value) -> Result<Value, Error> {
+    if let Some(passthrough) = passthrough_unavailable(&value) {
+        return Ok(passthrough);
+    }
+    let price = to_f64(&value)?;
+    Ok(Value::from(format_price(price)))
+}
+
 /// 毫秒时间戳 → 本地时间 `YYYY-MM-DD HH:MM`。
 fn filter_ts(value: Value) -> Result<Value, Error> {
     if let Some(passthrough) = passthrough_unavailable(&value) {
@@ -132,6 +149,25 @@ fn filter_side(value: Value) -> Result<Value, Error> {
         .map(str::to_string)
         .ok_or_else(|| Error::new(ErrorKind::InvalidOperation, "side 过滤器需要字符串"))?;
     Ok(Value::from(crate::position::stats::direction_label(&raw)))
+}
+
+/// 保证金模式：`cross` / `isolated` → 中文。
+///
+/// 文案与前端 `strings.ts` 的 `mgnMode` 一致。提示词里混着 `cross` 这种英文枚举
+/// 不算错，但一份中文提示词里出现两种语言，读起来会让人怀疑是不是两套东西。
+fn filter_margin(value: Value) -> Result<Value, Error> {
+    if let Some(passthrough) = passthrough_unavailable(&value) {
+        return Ok(passthrough);
+    }
+    let raw = value
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| Error::new(ErrorKind::InvalidOperation, "margin 过滤器需要字符串"))?;
+    Ok(Value::from(match raw.as_str() {
+        "cross" => "全仓",
+        "isolated" => "逐仓",
+        other => return Ok(Value::from(other.to_string())),
+    }))
 }
 
 /// 渲染受隐私分级影响的**金额**。
@@ -285,6 +321,24 @@ pub fn format_signed_usd(amount: f64) -> String {
         if amount < 0.0 { "-" } else { "+" },
         format_usd(amount.abs())
     )
+}
+
+/// 价格的展示精度：按量级分档。
+///
+/// 分档依据是各交易所实际的报价精度（tick size），不是有效数字：
+/// BTC 报 0.1 档，DOGE 报 0.00001 档。固定 2 位会把小币全渲染成 0.00。
+pub fn format_price(price: f64) -> String {
+    let magnitude = price.abs();
+    let decimals = if magnitude >= 1.0 {
+        2
+    } else if magnitude >= 0.01 {
+        4
+    } else if magnitude >= 0.0001 {
+        6
+    } else {
+        8
+    };
+    format!("{price:.decimals$}")
 }
 
 pub fn format_pct(ratio: f64, precision: usize) -> String {
@@ -565,5 +619,39 @@ mod composition_tests {
         )
         .expect("应能渲染");
         assert_eq!(output, "[数据不可得：第一次]");
+    }
+}
+
+#[cfg(test)]
+mod price_tests {
+    use super::*;
+
+    /// 分档依据是交易所报价精度，不是有效数字。
+    #[test]
+    fn price_precision_follows_magnitude() {
+        // 大额：2 位（BTC/ETH 的报价精度）
+        assert_eq!(format_price(84_547.0), "84547.00");
+        assert_eq!(format_price(2_718.8), "2718.80");
+        assert_eq!(format_price(120.44), "120.44");
+        // 1 以上仍是 2 位
+        assert_eq!(format_price(1.61), "1.61");
+        assert_eq!(format_price(5.05), "5.05");
+        // 小于 1：4 位
+        assert_eq!(format_price(0.5432), "0.5432");
+        assert_eq!(format_price(0.0984), "0.0984");
+        // 更小：6 / 8 位
+        assert_eq!(format_price(0.001234), "0.001234");
+        assert_eq!(format_price(0.00000123), "0.00000123");
+    }
+
+    /// 这条是加 `price` 过滤器的直接原因：直接渲染 f64 会带出 16 位小数。
+    #[test]
+    fn raw_float_precision_is_never_leaked() {
+        let ugly = 65.54630065390165_f64;
+        assert_eq!(format_price(ugly), "65.55");
+        assert!(
+            !format_price(ugly).contains("65390165"),
+            "不该出现 f64 的原始精度"
+        );
     }
 }

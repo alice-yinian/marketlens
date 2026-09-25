@@ -31,7 +31,10 @@ const KEY_GAP: Duration = Duration::from_millis(40);
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let Some(command) = args.first() else {
-        eprintln!("用法: xtype text <字符串> | xtype key <keysym> | xtype click <x> <y>");
+        eprintln!(
+            "用法: xtype text <字符串> | xtype key <keysym> | xtype click <x> <y> | \
+             xtype scroll <n> | xtype geom"
+        );
         std::process::exit(2);
     };
 
@@ -54,9 +57,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let y: i16 = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(0);
             click(&conn, x, y)?;
         }
+        // 打印可映射窗口在 root 上的位置。
+        //
+        // 必需：`xshot` 抓的是**子窗口**（应用窗口），而 XTEST 注入用的是
+        // **root 坐标**。两者差一个窗口偏移量，而窗口位置由窗口管理器决定，
+        // 每次启动可能不同——写死坐标会在某次运行后突然失效，且症状是
+        // 「点了没反应」，极难联想到坐标问题。
+        "geom" => {
+            let screen = &conn.setup().roots[0];
+            let tree = conn.query_tree(screen.root)?.reply()?;
+            for &child in &tree.children {
+                let Ok(attrs) = conn.get_window_attributes(child)?.reply() else {
+                    continue;
+                };
+                if attrs.map_state != x11rb::protocol::xproto::MapState::VIEWABLE {
+                    continue;
+                }
+                let geo = conn.get_geometry(child)?.reply()?;
+                let translated = conn
+                    .translate_coordinates(child, screen.root, 0, 0)?
+                    .reply()?;
+                println!(
+                    "window={child} size={}x{} root_offset=({}, {})",
+                    geo.width, geo.height, translated.dst_x, translated.dst_y
+                );
+            }
+        }
         "scroll" => {
-            let count: usize = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(3);
-            scroll(&conn, count)?;
+            // 负数向上滚（button 4），正数向下（button 5）
+            let count: i32 = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(3);
+            // 可选坐标：双栏布局里左栏和右栏是**各自独立**的滚动容器，
+            // 固定滚窗口中心只能滚到左栏。不给坐标时保持旧行为。
+            let at = match (
+                args.get(2).and_then(|v| v.parse::<i16>().ok()),
+                args.get(3).and_then(|v| v.parse::<i16>().ok()),
+            ) {
+                (Some(x), Some(y)) => Some((x, y)),
+                _ => None,
+            };
+            scroll(&conn, count, at)?;
         }
         other => {
             eprintln!("未知子命令：{other}");
@@ -134,23 +173,25 @@ fn click(conn: &RustConnection, x: i16, y: i16) -> Result<(), Box<dyn std::error
 /// 滚轮滚动。指针需要先位于可滚动区域上方。
 ///
 /// X11 的滚轮是鼠标按钮 4（上）/ 5（下），不是独立事件类型。
-fn scroll(conn: &RustConnection, count: usize) -> Result<(), Box<dyn std::error::Error>> {
-    // 先把指针移到窗口中部，否则滚动会落在指针当前位置的元素上
+fn scroll(conn: &RustConnection, count: i32, at: Option<(i16, i16)>) -> Result<(), Box<dyn std::error::Error>> {
+    // 先把指针移到目标位置，否则滚动会落在指针当前所在的元素上
+    let (x, y) = at.unwrap_or((680, 500));
     conn.xtest_fake_input(
         x11rb::protocol::xproto::MOTION_NOTIFY_EVENT,
         0,
         0,
         NONE,
-        680,
-        500,
+        x,
+        y,
         0,
     )?;
     conn.flush()?;
     sleep(Duration::from_millis(100));
 
-    for _ in 0..count {
-        conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_PRESS_EVENT, 5, 0, NONE, 0, 0, 0)?;
-        conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_RELEASE_EVENT, 5, 0, NONE, 0, 0, 0)?;
+    let button = if count < 0 { 4 } else { 5 };
+    for _ in 0..count.unsigned_abs() {
+        conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_PRESS_EVENT, button, 0, NONE, 0, 0, 0)?;
+        conn.xtest_fake_input(x11rb::protocol::xproto::BUTTON_RELEASE_EVENT, button, 0, NONE, 0, 0, 0)?;
         conn.flush()?;
         sleep(Duration::from_millis(80));
     }

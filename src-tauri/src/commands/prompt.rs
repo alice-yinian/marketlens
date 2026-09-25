@@ -159,7 +159,13 @@ pub async fn prompt_build_live(
     request: BuildLiveRequest,
 ) -> AppResult<PromptOutput> {
     let level = request.privacy.unwrap_or_default();
-    let template = resolve_template(&db, request.template_id.as_deref(), request.body).await?;
+    let template = resolve_template(
+        &db,
+        request.template_id.as_deref(),
+        request.body,
+        TemplateKind::Live,
+    )
+    .await?;
 
     if template.kind != TemplateKind::Live {
         return Err(AppError::Config(format!(
@@ -254,7 +260,13 @@ pub async fn prompt_build_review(
     }
 
     let level = request.privacy.unwrap_or_default();
-    let template = resolve_template(&db, request.template_id.as_deref(), request.body).await?;
+    let template = resolve_template(
+        &db,
+        request.template_id.as_deref(),
+        request.body,
+        TemplateKind::Review,
+    )
+    .await?;
 
     if template.kind != TemplateKind::Review {
         return Err(AppError::Config(format!(
@@ -285,19 +297,21 @@ pub async fn prompt_build_review(
 }
 
 /// 解析要用的模板：显式 `body`（编辑器预览）优先，否则按 id 查库、再查内置。
+///
+/// `kind` 只在 `body` 分支用到：命令层已经知道自己在生成实盘还是复盘，
+/// 用它给「未保存的模板」一个正确的类型，否则复盘预览会因类型校验被误拒。
 async fn resolve_template(
     db: &Db,
     template_id: Option<&str>,
     body: Option<String>,
+    kind: TemplateKind,
 ) -> AppResult<PromptTemplate> {
     if let Some(body) = body {
         return Ok(PromptTemplate {
             id: String::new(),
             name: "（未保存的模板）".to_string(),
             description: String::new(),
-            // 预览时类型由调用方的命令决定，这里给一个占位；
-            // 命令层已在上游校验过类型，不会用到这个值。
-            kind: TemplateKind::Live,
+            kind,
             body,
             builtin: false,
             updated_at: 0,
@@ -355,4 +369,136 @@ fn finish(
         warnings,
         generated_at: crate::storage::now_ms(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! 这一组测试的直接动因是一个**真实漏过的 bug**：
+    //!
+    //! `resolve_template` 的 body 分支曾硬编码 `kind = Live`，而
+    //! `prompt_build_review` 拿到模板后会校验类型——于是「复盘模板 + 编辑器实时预览」
+    //! 必然报「这是实盘模板」。后端自测没覆盖，因为它只测了 `template_id` 那条路径，
+    //! 而前端**编辑后总是传 body**。
+    //!
+    //! 教训：预览路径（body）和已保存路径（template_id）是两条路，两条都要测。
+
+    use super::*;
+
+    async fn memory_db() -> Db {
+        Db::open_in_memory().await.expect("内存库创建失败")
+    }
+
+    /// 预览未保存的正文时，类型必须来自**调用方**，否则命令层的类型校验会误拒。
+    #[tokio::test]
+    async fn preview_body_takes_the_callers_kind() {
+        let db = memory_db().await;
+
+        let review = resolve_template(
+            &db,
+            None,
+            Some("# 复盘模板".to_string()),
+            TemplateKind::Review,
+        )
+        .await
+        .expect("应能解析");
+        assert_eq!(
+            review.kind,
+            TemplateKind::Review,
+            "复盘预览必须得到 Review 类型，否则会被 prompt_build_review 的类型校验误拒"
+        );
+
+        let live = resolve_template(
+            &db,
+            None,
+            Some("# 实盘模板".to_string()),
+            TemplateKind::Live,
+        )
+        .await
+        .expect("应能解析");
+        assert_eq!(live.kind, TemplateKind::Live);
+    }
+
+    /// 已保存的模板（内置或用户）类型来自自身，**不该被调用方的兜底值覆盖**。
+    /// 否则一个实盘模板会被当成复盘模板渲染，用户看到的是莫名其妙的错误。
+    #[tokio::test]
+    async fn saved_templates_keep_their_own_kind() {
+        let db = memory_db().await;
+
+        let builtin = resolve_template(
+            &db,
+            Some("review_performance"),
+            None,
+            TemplateKind::Live, // 故意传错：不该生效
+        )
+        .await
+        .expect("内置模板应存在");
+        assert_eq!(
+            builtin.kind,
+            TemplateKind::Review,
+            "内置模板的类型应来自自身，而不是调用方传的兜底值"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_template_is_an_error_with_the_id() {
+        let db = memory_db().await;
+        let err = resolve_template(&db, Some("nope"), None, TemplateKind::Live)
+            .await
+            .expect_err("不存在的模板应当报错");
+        assert!(err.to_string().contains("nope"), "错误里应带上 id：{err}");
+    }
+
+    /// 用户模板的数据库往返：写入 → 读回 → 列出 → 删除。
+    #[tokio::test]
+    async fn user_templates_round_trip_through_the_database() {
+        let db = memory_db().await;
+
+        let row = crate::storage::PromptTemplateRow {
+            id: "user_test_1".to_string(),
+            name: "我的模板".to_string(),
+            description: Some("说明".to_string()),
+            scope: "review".to_string(),
+            body: "{{ period.bar }}".to_string(),
+            updated_at: 1_700_000_000_000,
+        };
+        db.upsert_prompt_template(&row).await.expect("写入失败");
+
+        let loaded = resolve_template(&db, Some("user_test_1"), None, TemplateKind::Live)
+            .await
+            .expect("应能读回");
+        assert_eq!(loaded.name, "我的模板");
+        assert_eq!(loaded.kind, TemplateKind::Review);
+        assert!(!loaded.builtin, "用户模板不该被标成内置");
+
+        let listed = db.list_prompt_templates().await.expect("列出失败");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "user_test_1");
+
+        // 覆盖保存：created_at 不该跟着 updated_at 一起往后跑
+        let updated = crate::storage::PromptTemplateRow {
+            name: "改过的名字".to_string(),
+            updated_at: 1_700_000_999_000,
+            ..row.clone()
+        };
+        db.upsert_prompt_template(&updated).await.expect("覆盖失败");
+        let reloaded = db
+            .get_prompt_template("user_test_1")
+            .await
+            .expect("读取失败")
+            .expect("应当存在");
+        assert_eq!(reloaded.name, "改过的名字");
+        assert_eq!(reloaded.updated_at, 1_700_000_999_000);
+
+        assert!(
+            db.delete_prompt_template("user_test_1")
+                .await
+                .expect("删除失败")
+        );
+        assert!(
+            !db.delete_prompt_template("user_test_1")
+                .await
+                .expect("重复删除不应报错"),
+            "第二次删除应返回 false 而不是报错"
+        );
+    }
 }
