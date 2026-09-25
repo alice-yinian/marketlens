@@ -130,6 +130,26 @@ pub fn credentials_for(vault: &Vault, id: &str) -> AppResult<Credentials> {
         .ok_or_else(|| AppError::Config(format!("凭据 {id} 不存在")))
 }
 
+/// 取凭据：给了 id 就用它，没给就用**第一条**。
+///
+/// 返回 `None` 表示一条凭据都没有——**这不是错误**。
+/// 实盘提示词可以只含行情：用户可能还没配凭据，也可能就是想让 AI 先看看市场。
+/// 把它当错误会让「没凭据」这个完全正常的状态变成一片红。
+pub async fn credentials_for_optional(
+    db: &crate::storage::Db,
+    vault: &Vault,
+    id: Option<&str>,
+) -> AppResult<Option<Credentials>> {
+    let id = match id {
+        Some(id) => id.to_string(),
+        None => match db.list_credentials().await?.first() {
+            Some(meta) => meta.id.clone(),
+            None => return Ok(None),
+        },
+    };
+    Ok(Some(credentials_for(vault, &id)?))
+}
+
 /// 探测凭据：调用 `account/config`，读出权限与持仓模式。
 ///
 /// **非只读密钥不会导致失败**——但会把 `read_only = false` 返回给界面，

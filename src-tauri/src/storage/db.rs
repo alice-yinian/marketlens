@@ -44,6 +44,21 @@ impl From<CandleRow> for Candle {
 /// 取 10 分钟：比 Rubik 的 5 分钟粒度略长，足以覆盖交易所对最近几个点的修订。
 const FINALIZED_AFTER_MS: i64 = 10 * 60 * 1000;
 
+/// 用户提示词模板的数据库形态（对应 0001 已建的 `prompt_templates`）。
+///
+/// `description` 在表里可空，这里收成 `String`：模板正文与说明的区别，
+/// 用户不该关心「NULL 和空串有什么不一样」。
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct PromptTemplateRow {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    /// 表里的列名是 `scope`（`live` | `review`）
+    pub scope: String,
+    pub body: String,
+    pub updated_at: i64,
+}
+
 /// 数据库句柄。
 ///
 /// 内部持有连接池，命令层只能调用语义化方法——前端永远拿不到「执行任意 SQL」
@@ -171,6 +186,60 @@ impl Db {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    pub async fn list_prompt_templates(&self) -> AppResult<Vec<PromptTemplateRow>> {
+        let rows = sqlx::query_as::<_, PromptTemplateRow>(
+            "SELECT id, name, description, scope, body, updated_at \
+             FROM prompt_templates ORDER BY updated_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn get_prompt_template(&self, id: &str) -> AppResult<Option<PromptTemplateRow>> {
+        let row = sqlx::query_as::<_, PromptTemplateRow>(
+            "SELECT id, name, description, scope, body, updated_at \
+             FROM prompt_templates WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// 插入或覆盖一个用户模板。
+    ///
+    /// `created_at` 只在首次插入时写入——覆盖不该让「创建时间」跟着往后跑。
+    /// `builtin` 恒为 0：内置模板随代码发布，不入库（见 `prompt::templates`）。
+    pub async fn upsert_prompt_template(&self, row: &PromptTemplateRow) -> AppResult<()> {
+        sqlx::query(
+            "INSERT INTO prompt_templates \
+                (id, name, description, scope, body, profile, builtin, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'standard', 0, ?6, ?6) \
+             ON CONFLICT(id) DO UPDATE SET \
+                name = excluded.name, description = excluded.description, \
+                scope = excluded.scope, body = excluded.body, updated_at = excluded.updated_at",
+        )
+        .bind(&row.id)
+        .bind(&row.name)
+        .bind(&row.description)
+        .bind(&row.scope)
+        .bind(&row.body)
+        .bind(row.updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// 删除用户模板。返回 `false` 表示本来就不存在。
+    pub async fn delete_prompt_template(&self, id: &str) -> AppResult<bool> {
+        let result = sqlx::query("DELETE FROM prompt_templates WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn delete_credential_meta(&self, id: &str) -> AppResult<()> {

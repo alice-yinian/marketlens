@@ -10,10 +10,13 @@ mod fetch;
 mod market;
 mod okx;
 mod position;
+mod prompt;
 mod review;
 mod settings;
 mod storage;
 mod system;
+#[cfg(test)]
+mod test_fixtures;
 mod vault;
 
 pub use error::{AppError, AppResult};
@@ -66,6 +69,11 @@ pub fn run() {
             commands::review::review_fetch,
             commands::review::review_cancel,
             commands::review::review_context,
+            commands::prompt::template_list,
+            commands::prompt::template_save,
+            commands::prompt::template_delete,
+            commands::prompt::prompt_build_live,
+            commands::prompt::prompt_build_review,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用启动失败");
@@ -190,6 +198,10 @@ mod tests {
             Progress,
             ExecutionReport,
             ClosedPosition,
+            crate::prompt::privacy::PrivacyLevel,
+            crate::prompt::templates::PromptTemplate,
+            crate::prompt::templates::TemplateKind,
+            crate::commands::prompt::PromptOutput,
             RegimeSnapshot,
             ReviewStats,
             StatGroup,

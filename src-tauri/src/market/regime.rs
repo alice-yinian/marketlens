@@ -35,6 +35,28 @@ pub enum Crowding {
     Balanced,
 }
 
+/// 波动等级的中文标签。
+///
+/// 文案必须与前端 `strings.ts` 的 `live.vol` 一致——同一个状态在界面和提示词里
+/// 叫法不同，用户会怀疑是不是两回事。Rust 侧需要它是因为**提示词在 Rust 里渲染**。
+pub fn vol_label(vol: VolRegime) -> &'static str {
+    match vol {
+        VolRegime::Low => "低波动",
+        VolRegime::Normal => "波动正常",
+        VolRegime::High => "高波动",
+        VolRegime::Extreme => "极端波动",
+    }
+}
+
+/// 拥挤度的中文标签。同 [`vol_label`]，与前端 `live.crowding` 保持一致。
+pub fn crowding_label(crowding: Crowding) -> &'static str {
+    match crowding {
+        Crowding::LongCrowded => "多头拥挤",
+        Crowding::ShortCrowded => "空头拥挤",
+        Crowding::Balanced => "多空均衡",
+    }
+}
+
 /// 判定阈值。全部集中在此，便于后续落进 `settings` 表由用户调整。
 #[derive(Debug, Clone, Copy)]
 pub struct Thresholds {

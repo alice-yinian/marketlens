@@ -46,6 +46,13 @@ pub enum AppError {
 
     #[error("{0}")]
     Config(String),
+
+    /// 提示词模板错误：语法错误、引用了不存在的变量、过滤器参数不对。
+    ///
+    /// 与「数据不可得」区分开：数据不可得是**正常结果**（渲染成显式声明），
+    /// 而模板错误是**用户写错了**，必须让他看见并修。
+    #[error("{0}")]
+    Template(String),
 }
 
 /// 传给前端的结构化错误载荷
@@ -71,6 +78,7 @@ impl AppError {
             AppError::Vault(_) => "Vault",
             AppError::RangeTooLarge => "RangeTooLarge",
             AppError::Config(_) => "Config",
+            AppError::Template(_) => "Template",
         }
     }
 
@@ -86,6 +94,8 @@ impl AppError {
             // 锁定与密钥库错误都需要用户动作，重试不会自愈
             AppError::VaultLocked | AppError::Vault(_) => false,
             AppError::RangeTooLarge => false,
+            // 模板写错了，重试同一份模板不会自愈
+            AppError::Template(_) => false,
             AppError::Database(_) | AppError::Io(_) | AppError::Http(_) => true,
         }
     }

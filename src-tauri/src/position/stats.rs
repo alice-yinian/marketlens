@@ -207,7 +207,7 @@ fn group_by(
         .collect()
 }
 
-fn trend_label(trend: crate::market::regime::TrendRegime) -> &'static str {
+pub(crate) fn trend_label(trend: crate::market::regime::TrendRegime) -> &'static str {
     use crate::market::regime::TrendRegime;
     match trend {
         TrendRegime::Uptrend => "趋势向上",
@@ -217,7 +217,7 @@ fn trend_label(trend: crate::market::regime::TrendRegime) -> &'static str {
     }
 }
 
-fn direction_label(direction: &str) -> &'static str {
+pub(crate) fn direction_label(direction: &str) -> &'static str {
     match direction {
         "long" => "多",
         "short" => "空",
