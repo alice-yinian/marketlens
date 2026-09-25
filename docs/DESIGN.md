@@ -1439,6 +1439,16 @@ jobs:
 - `npm audit --audit-level=high` 走**官方源**才能拿到漏洞库；本机 `~/.npmrc` 配的镜像
   （npmmirror）没有实现 audit 端点，会报 `NOT_IMPLEMENTED`。CI 上用的就是官方源，
   故不受影响；本地手测需显式 `--registry=https://registry.npmjs.org`。
+- **已知残留（上游未修，非本仓库代码问题）**：`glib 0.18.5` 的
+  `RUSTSEC-2024-0429`（unsound：`VariantStrIter` 的 `Iterator` 实现）。
+  依赖链 `tauri 2.11.6 → gtk ^0.18 → glib 0.18.5`，而修复版是 `glib 0.20.0`；
+  `tauri 2.11.6` 已是当前最新稳定版，且它对 `gtk` 的约束就是 `^0.18`
+  （`gtk 0.19` 才要求 `glib ^0.22`）。**必须等上游 Tauri 升级 gtk**。
+  所以 Dependabot 会持续报 `security_update_not_possible`
+  （`latest-resolvable-version: 0.18.5`），这是符合预期的。
+  影响面：**仅 Linux**（`cfg(target_os = "linux")` 才引入），且 `cargo audit`
+  将它归入 `warnings.unsound` 而非 `vulnerabilities`（实测 `count: 0`），
+  因此**不会让 CI 变红**。当前不抑制、不 ignore，保持可见。
 - 产物：`MarketLens_x.y.z_x64-setup.exe`（Windows 安装包）、`MarketLens_x.y.z_arm64-v8a.apk`（自用分发）、`MarketLens_x.y.z.aab`（备用，未上架前仅归档）。
 - 包名 `com.marketlens.app` 必须与 `tauri.conf.json` 的 `identifier`、Android 工程保持一致。**首次发布后不可更改**——改动会让系统视为全新应用，导致无法覆盖升级。
 
