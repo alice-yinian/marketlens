@@ -151,7 +151,7 @@ flowchart TB
 | 层 | 选型 | 理由 |
 |---|---|---|
 | 应用框架 | **Tauri v2** | 单套 Rust 核心同时产出 Windows 与 Android 产物；官方插件生态覆盖 SQLite/加密库；包体积远小于 Electron |
-| 后端语言 | **Rust 2021**（`rustc ≥ 1.77.2`，Stronghold 插件下限） | 强类型、无 GC、精确的并发与限流控制 |
+| 后端语言 | **Rust 2024 edition**（MSRV 1.85；Tauri v2 自身要求 ≥ 1.77.2） | 强类型、无 GC、精确的并发与限流控制。edition 2024 是本工具链的默认，且给了更严格的安全默认值 |
 | 异步运行时 | `tokio` + `reqwest`（rustls） | 原生 TLS，免去 Windows/Android 上的 OpenSSL 交叉编译地狱。**不引入 `tokio-tungstenite`**（无 WS） |
 | 数据库 | **SQLite**（`sqlx`，`bundled` feature） | 单文件、零运维、跨端一致；`bundled` 免系统库依赖 |
 | 密钥库 | **`tauri-plugin-stronghold`**（IOTA Stronghold，argon2 派生） | 官方文档标注 Windows / Android / iOS / Linux / macOS 全平台支持。⚠️ 备选 `keyring` crate 在 Android 上**不可用**：`keyring-rs` 无 Android 后端，`android-native-keyring-store` 需 JNI 手工初始化 app context，复杂度与风险都更高 |
@@ -929,6 +929,10 @@ sequenceDiagram
 
 Rust ↔ 前端用 `serde`，字段命名统一 **`snake_case`**（不做 camelCase 转换——少一层映射就少一类 bug）。
 
+**i64 必须声明为 TS 的 `number`（已实现，有测试守卫）**：ts-rs 默认把 `i64` 映射成 TypeScript 的 `bigint`，但我们的 IPC 走 JSON——前端拿到的实际是 `number`。声明成 `bigint` 会让类型系统撒谎：调用方以为要处理 bigint，运行时却是 number。因此**每个 i64 字段都要加 `#[ts(type = "number")]`**，并由 `i64_fields_are_declared_as_number_not_bigint` 测试守住。这在本项目里不是小概率问题：**所有时间戳都是 Unix 毫秒 i64**（§7.1），M1 之后会大量出现。
+
+> 为什么可以安全地当 number：JS number 能精确表示到 2^53，而毫秒时间戳约 1.7×10^12，远在安全区内。
+
 **OKX 的空字符串坑（必须处理）**：OKX 经常用 `""` 表示缺失值（如 `"liqPx": ""`），直接反序列化到 `f64` 会失败：
 
 ```rust
@@ -944,7 +948,16 @@ fn de_opt_f64<'de, D>(d: D) -> Result<Option<f64>, D::Error> {
 
 ### 7.4 类型生成
 
-用 `ts-rs` 从 Rust 结构体生成 `src/lib/types.ts`。CI 中校验生成结果与提交版本一致（`cargo test export_bindings` + git diff 检查），防止前后端类型漂移。
+用 `ts-rs` 从 Rust 结构体生成 `src/lib/types.ts`。**导出目录由仓库根的 `.cargo/config.toml` 固定**：
+
+```toml
+[env]
+TS_RS_EXPORT_DIR = { value = "src/lib", relative = true }
+```
+
+这一步是必需的：ts-rs 的 `#[ts(export_to = "...")]` 是**相对于 `TS_RS_EXPORT_DIR`** 解析的（默认 `./bindings`），不显式固定的话本地与 CI 的导出位置会不一致——而类型契约漂移正是 CI 要拦的东西，导出路径若依赖环境变量就失去了意义。
+
+CI 中校验生成结果与提交版本一致（`cargo test` 触发导出 → `git diff --exit-code -- src/lib/types.ts`），防止前后端类型漂移。**已验证本地可复现：`cargo test` 后 `git diff` 为空。**
 
 ---
 
@@ -1220,7 +1233,7 @@ CREATE TABLE journal (
 |---|---|
 | 密钥泄漏 | 明文只存 Stronghold vault（argon2 派生加密）；SQLite 只存掩码；日志脱敏中间件过滤 `OK-ACCESS-*` 头与 secret 字段 |
 | 越权交易 | 代码层面不实现任何私有 `POST` 端点；`credentials_test` 主动读取权限，非只读时**红色警示** |
-| 前端注入 → 数据泄漏 | 不向前端暴露 SQL 与 vault 命令；`capabilities/default.json` 白名单最小化；CSP 收紧（禁 `unsafe-eval`，`connect-src` 仅 `ipc:` 与 `https://*.okx.com`） |
+| 前端注入 → 数据泄漏 | 不向前端暴露 SQL 与 vault 命令；`capabilities/default.json` **仅放行 `core:default`**；CSP 收紧为 `default-src 'self'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost`。注意 **`connect-src` 里刻意不含 `okx.com`**——所有交易所请求都由 Rust 侧发起，WebView 永远不需要直连外网，这比原设计更紧 |
 | 提示词泄漏隐私 | 隐私分级在上下文装配阶段强制生效；导出时按等级二次确认 |
 | 剪贴板残留 | 复制提示词后 60s 自动清空剪贴板（可选，默认开） |
 | 无人值守 | 15 分钟无操作自动锁 vault |
@@ -1256,6 +1269,17 @@ CREATE TABLE journal (
 | 前端 | Vitest | 格式化函数、进度条状态机、可得性提示渲染 |
 | 端到端 | Windows：`tauri-driver`（WebDriver） | 解锁 → 实盘刷新 → 生成提示词 → 断言输出。⚠️ `tauri-driver` **不支持 Android**，Android 用手工冒烟清单 |
 
+### 13.1 已落地的测试（M0）
+
+| 测试 | 守住什么 |
+|---|---|
+| `migrations_apply_on_empty_database` | `0001_init.sql` 能在空库上干净执行，且建出设计文档 §8 的 15 张表 |
+| `cargo_version_matches_tauri_config` | `tauri.conf.json` 与 `Cargo.toml` 的版本号不漂移 |
+| `i64_fields_are_declared_as_number_not_bigint` | TS 声明里不出现 `bigint`（§7.2 的契约规则） |
+| `export_bindings_appinfo`（ts-rs 自动生成） | 类型导出链路可执行 |
+
+`cargo test`、`cargo fmt --check`、`cargo clippy -D warnings` 均已在开发机通过。
+
 **Android 手工冒烟清单**（每次发版必过）：
 1. 冷启动 → 建 vault → 录入只读 Key → `credentials_test` 返回正确 UID 与 `pos_mode`
 2. 实盘页刷新 → 数据正确，`fetched_at` 显示，30s 内二次进入命中缓存
@@ -1283,19 +1307,52 @@ jobs:
 - 产物：`MarketLens_x.y.z_x64-setup.exe`（Windows 安装包）、`MarketLens_x.y.z_arm64-v8a.apk`（自用分发）、`MarketLens_x.y.z.aab`（备用，未上架前仅归档）。
 - 包名 `com.marketlens.app` 必须与 `tauri.conf.json` 的 `identifier`、Android 工程保持一致。**首次发布后不可更改**——改动会让系统视为全新应用，导致无法覆盖升级。
 
+### 14.1 开发环境与无头验证
+
+开发机是 **AlmaLinux 10 LXC 容器**，而 **RHEL 10 已移除 X.Org 服务器**，这使常规的「跑起来看一眼」路径全部失效：
+
+| 常规方案 | 在本机的结果 |
+|---|---|
+| Xvfb | ❌ EL10 无此包（X.Org 服务器已被移除） |
+| ImageMagick `import` | ❌ EPEL 的构建**未包含 X11 支持**（delegates 里没有 `x`） |
+| `xwd` | ❌ 无此包 |
+| `weston-screenshooter` | ❌ 服务端拒绝授权（`unauthorized`） |
+| weston debug 的 `screenshot` 流 | ❌ weston 14 已无此流 |
+
+**可行组合**（已脚本化）：`weston --backend=headless-backend.so` 造 Wayland 显示 → `--xwayland` 提供真实 X display → 应用以 `GDK_BACKEND=x11` 运行 → `tools/xshot`（x11rb 抓窗口）截图。
+
+```bash
+MARKETLENS_DEV=1 scripts/headless-smoke.sh /tmp/shot.png   # debug 构建
+MARKETLENS_BIN=src-tauri/target/release/marketlens scripts/headless-smoke.sh /tmp/shot.png
+```
+
+两个必须知道的点：
+
+1. **debug 构建会连接 `devUrl` 而不是内嵌前端资源**（Tauri 的正常行为），所以用 debug 二进制冒烟时必须先起 `npm run dev`（脚本的 `MARKETLENS_DEV=1` 会代劳）；release 构建才内嵌 `dist`。
+2. **无头环境下 WebKit 必须强制软件渲染**：`WEBKIT_DISABLE_COMPOSITING_MODE=1`、`WEBKIT_DISABLE_DMABUF_RENDERER=1`、`LIBGL_ALWAYS_SOFTWARE=1`，否则白屏或崩溃。
+
+**验收边界（已确认）**：本机验证 Linux 桌面端；**Windows 与 Android 的构建验证交给 CI**（`windows-latest` 与 `ubuntu + Android SDK/NDK` 才是这两端的原生环境），运行验证由用户在其设备上完成。
+
 ---
 
 ## 15. 里程碑
 
 | 阶段 | 交付物 | 验收标准 |
 |---|---|---|
-| **M0 骨架** | Tauri v2 双端空壳、SQLite 迁移、ts-rs 类型生成、CI 骨架 | Windows 与 Android 都能启动并显示版本号 |
+| ~~**M0 骨架**~~ ✅ **已完成** | Tauri v2 双端空壳、SQLite 迁移、ts-rs 类型生成、CI 骨架 | **实际验收（2026-09-25）**：Linux 桌面端真实启动，界面显示 应用版本 0.1.0 / 核心版本 0.1.0 / 数据库 Schema 版本 1 / 运行平台 linux，IPC 徽章为「通道正常」。Windows 与 Android 的构建验证按 §14.1 交给 CI |
 | **M1 实盘** | OKX 公开数据按需拉取、指标计算、状态分类、缓存层、实盘页 | 实盘页显示 BTC/ETH 完整市场状态，数值与 OKX 网页端一致（人工比对 3 项）；30s 内二次进入命中缓存 |
 | **M2 账户与仓位** | vault、凭据管理、首次启动引导（3 步，含标的集选择）、当前仓位、权益、本地留痕 | 冷启动走完 3 步引导；录入只读 Key 后正确显示未平仓位与权益；非只读 Key 有警示；留痕正常写入 |
 | **M3 采集计划器** | FetchPlan 展开、分页迭代器、并发执行、进度事件、断点续传、可得性矩阵 | 复盘 30 天 2 标的 ≈ 60 请求在 10 秒内完成；切后台再回前台能续传；超出窗口的指标被正确标记为 Unavailable |
 | **M4 复盘管线** | 时段市场状态重建、历史仓位双源合并、关键时点归因、统计 | 能查到官方窗口内历史仓位；逐笔仓位都带开仓时刻状态（或明确标注不可得）；按 regime 分组统计正确 |
 | **M5 提示词** | minijinja 集成、双模板集（4 个内置模板）、双上下文装配、隐私分级、模板编辑器、导出 | 4 模板 × 3 隐私等级全部通过黄金测试；L2 输出无金额；不可得字段渲染为「数据不可得」 |
 | **M6 发布** | 打包签名、诊断导出、缓存管理 UI、文档 | Win 安装包与 Android APK 可正常安装使用，冒烟清单全过 |
+
+### 15.1 M0 验收记录（2026-09-25）
+
+- **真实启动截图**：应用窗口标题 `MarketLens`，页面显示上表的四项数值，绿色徽章「IPC 通道正常」。
+- **Schema 版本 `1` 的来历**：该数字读自数据库 `_sqlx_migrations` 表，不是代码里的常量——所以界面上出现它，本身就证明迁移确实执行过。
+- **通过的检查**：`cargo test` 4/4、`cargo fmt --check`、`cargo clippy -D warnings`（零警告）、`npm run build`（tsc 双配置 + vite）、类型契约无漂移（`cargo test` 后 `git diff` 为空）。
+- **未在本机验证**：Windows / Android 的构建与运行，原因与替代方案见 §14.1。
 
 **关键路径**：M1 → M3 → M4 → M5。M2 可与 M1 并行。M3（采集计划器）是整个复盘能力的技术核心，也是最容易低估工期的部分。
 
