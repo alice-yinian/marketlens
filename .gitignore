@@ -1,7 +1,8 @@
 # 依赖与产物
 node_modules/
 dist/
-src-tauri/target/
+# 所有 Rust 构建产物（src-tauri 与 tools/ 下都有 target 目录）
+target/
 
 # Tauri 生成的平台工程（android/ 需要提交，gen/ 是派生物）
 src-tauri/gen/

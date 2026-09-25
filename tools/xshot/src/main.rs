@@ -32,9 +32,10 @@ fn capture(
     out: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let geo = conn.get_geometry(win)?.reply()?;
+    let absolute = conn.translate_coordinates(win, screen_root(conn)?, 0, 0)?.reply()?;
     eprintln!(
-        "[{label}] win={win} {}x{} depth={}",
-        geo.width, geo.height, geo.depth
+        "[{label}] win={win} {}x{} depth={} 绝对位置=({}, {})",
+        geo.width, geo.height, geo.depth, absolute.dst_x, absolute.dst_y
     );
 
     let reply = conn
@@ -59,6 +60,11 @@ fn capture(
 
     println!("已写入 {out}（{label} {width}x{height}）");
     Ok(())
+}
+
+/// 当前屏幕的 root 窗口。用于把窗口坐标换算成屏幕坐标——注入点击事件用的是屏幕坐标。
+fn screen_root(conn: &RustConnection) -> Result<Window, Box<dyn std::error::Error>> {
+    Ok(conn.setup().roots[0].root)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

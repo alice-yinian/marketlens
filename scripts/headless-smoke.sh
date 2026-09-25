@@ -19,7 +19,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="${MARKETLENS_BIN:-$ROOT/src-tauri/target/debug/marketlens}"
-SHOT="${MARKETLENS_SHOT:-/tmp/xshot/target/release/xshot}"
+# 截图/输入工具在仓库内（tools/xshot），构建：cd tools/xshot && cargo build --release
+SHOT="${MARKETLENS_SHOT:-$ROOT/tools/xshot/target/release/xshot}"
 OUT="${1:-/tmp/marketlens-smoke.png}"
 DEV="${MARKETLENS_DEV:-0}"
 

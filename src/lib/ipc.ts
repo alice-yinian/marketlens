@@ -8,7 +8,32 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 
-import type { AppInfo, LiveSnapshot } from "./types";
+import type {
+  AccountSnapshot,
+  AppInfo,
+  BootstrapState,
+  CredentialMeta,
+  CredentialProbe,
+  LiveSnapshot,
+  VaultStatus,
+  WatchlistCandidate,
+} from "./types";
+
+/**
+ * `credentials_save` 的入参（对应 Rust 的 `SaveCredentialInput`）。
+ *
+ * 明文密钥只会沿这个方向进入 Rust；没有任何反向命令把它读回来。
+ */
+export interface SaveCredentialInput {
+  /** 为空 / 省略表示新建；有值表示覆盖同一条 */
+  id?: string | null;
+  label: string;
+  api_key: string;
+  secret_key: string;
+  passphrase: string;
+  /** true = 模拟盘（请求需带 `x-simulated-trading: 1`） */
+  demo: boolean;
+}
 
 /** 命令名 → { 入参, 出参 } 的单一事实来源 */
 export interface Commands {
@@ -17,6 +42,34 @@ export interface Commands {
   live_refresh: { args: { force?: boolean }; result: LiveSnapshot };
   /** 读取标的集，纯本地操作 */
   watchlist_get: { args: undefined; result: string[] };
+
+  /** 密钥库状态：`exists` 决定进入「创建」还是「解锁」 */
+  vault_status: { args: undefined; result: VaultStatus };
+  /** 解锁；密钥库不存在时等同于创建 */
+  vault_unlock: { args: { password: string }; result: VaultStatus };
+  vault_lock: { args: undefined; result: VaultStatus };
+
+  /**
+   * 启动状态：一次拿到密钥库是否已创建 / 是否已解锁 / 引导是否完成 / 当前标的集。
+   * 顶层据此决定进入「引导（完整 3 步）」「只解锁」还是「主界面」。
+   */
+  bootstrap_state: { args: undefined; result: BootstrapState };
+  /** 引导完成时调用一次，写入 `onboarding_done = true`（幂等） */
+  onboarding_complete: { args: undefined; result: void };
+
+  credentials_list: { args: undefined; result: CredentialMeta[] };
+  /** 保存凭据：明文进密钥库，元数据进库 */
+  credentials_save: { args: { input: SaveCredentialInput }; result: CredentialMeta };
+  credentials_delete: { args: { id: string }; result: void };
+  /** 探测凭据权限；`read_only === false` 时界面必须红色警示 */
+  credentials_test: { args: { id: string }; result: CredentialProbe };
+
+  /** 账户概览 + 全部持仓；每次调用都会发起真实请求 */
+  account_snapshot: { args: { query: { credential_id: string } }; result: AccountSnapshot };
+
+  watchlist_set: { args: { watchlist: string[] }; result: string[] };
+  /** 引导第 3 步的候选标的（按 24h 成交额降序的 Top 20） */
+  watchlist_candidates: { args: undefined; result: WatchlistCandidate[] };
 }
 
 /**

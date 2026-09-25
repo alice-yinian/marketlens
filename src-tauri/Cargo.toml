@@ -42,6 +42,36 @@ reqwest = { version = "0.13.5", default-features = false, features = [
     "query",
 ] }
 futures = { version = "0.3.34", default-features = false, features = ["std", "alloc"] }
+hmac = "0.13.0"
+sha2 = "0.11.0"
+base64 = "0.23.1"
+argon2 = "0.6.0"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+tauri-plugin-stronghold = "2.3.2"
+iota_stronghold = "2.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+
+# ---------------------------------------------------------------------------
+# 密码派生（KDF）必须优化编译，否则 dev 构建下「解锁密钥库」慢到不可用。
+#
+# 实测：未加这些覆盖时，单个 vault 往返测试耗时 **9 分钟**——argon2 是计算密集型
+# 纯 Rust 实现，`opt-level = 0` 会让它慢两三个数量级。这属于「功能正常但体验不可接受」
+# 的那类问题：用户解锁一次要等几分钟，会以为应用卡死了。
+#
+# 树里同时存在两个 argon2 实现（插件用 `argon2`，iota_stronghold 内部用
+# `rust-argon2`），以及 scrypt 与 libsodium（C 实现，opt-level 影响其 C 编译参数），
+# 所以四者都要覆盖。
+# ---------------------------------------------------------------------------
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.rust-argon2]
+opt-level = 3
+
+[profile.dev.package.scrypt]
+opt-level = 3
+
+[profile.dev.package.libsodium-sys-stable]
+opt-level = 3

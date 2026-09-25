@@ -4,13 +4,16 @@
 //! `commands` 暴露，且刻意不包含 SQL 与密钥库的原始操作（ADR #1、#2）。
 
 mod commands;
+mod credentials;
 mod error;
 mod fetch;
 mod market;
 mod okx;
+mod position;
 mod settings;
 mod storage;
 mod system;
+mod vault;
 
 pub use error::{AppError, AppResult};
 pub use system::AppInfo;
@@ -24,6 +27,8 @@ use tauri::Manager;
 ///
 /// 迁移失败会终止启动而不是降级运行——数据库不可用时应用没有任何可用功能，
 /// 静默降级只会让用户看到一连串莫名其妙的报错。
+///
+/// **密钥库刻意不在这里解锁**：解锁需要用户输入主密码，是启动后由前端触发的动作。
 pub fn run() {
     init_tracing();
 
@@ -35,13 +40,26 @@ pub fn run() {
             app.manage(db);
             app.manage(fetch::cache::LiveCache::new());
             app.manage(okx::client::OkxClient::new()?);
+            app.manage(vault::Vault::new(&handle)?);
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::system::app_info,
+            commands::system::bootstrap_state,
+            commands::system::onboarding_complete,
             commands::live::live_refresh,
             commands::live::watchlist_get,
+            commands::vault::vault_status,
+            commands::vault::vault_unlock,
+            commands::vault::vault_lock,
+            commands::credentials::credentials_list,
+            commands::credentials::credentials_save,
+            commands::credentials::credentials_delete,
+            commands::credentials::credentials_test,
+            commands::account::account_snapshot,
+            commands::account::watchlist_set,
+            commands::account::watchlist_candidates,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用启动失败");
@@ -64,7 +82,10 @@ mod tests {
     use sqlx::SqlitePool;
     use ts_rs::{Config, TS};
 
+    use crate::credentials::CredentialMeta;
     use crate::market::live::{LiveSnapshot, MarketState};
+    use crate::position::trace::TraceCoverage;
+    use crate::position::{AccountOverview, Position};
     use crate::system::AppInfo;
 
     /// 去掉 TS 源码里的块注释。
@@ -117,6 +138,22 @@ mod tests {
             (
                 "LiveSnapshot",
                 <LiveSnapshot as TS>::export_to_string(&Config::default()),
+            ),
+            (
+                "CredentialMeta",
+                <CredentialMeta as TS>::export_to_string(&Config::default()),
+            ),
+            (
+                "AccountOverview",
+                <AccountOverview as TS>::export_to_string(&Config::default()),
+            ),
+            (
+                "Position",
+                <Position as TS>::export_to_string(&Config::default()),
+            ),
+            (
+                "TraceCoverage",
+                <TraceCoverage as TS>::export_to_string(&Config::default()),
             ),
         ];
 

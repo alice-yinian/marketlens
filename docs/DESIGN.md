@@ -323,6 +323,17 @@ requestPath 包含 query string，但不含域名
 - `public/open-interest` 提供 **`oi` / `oiCcy` / `oiUsd`** 三个已命名字段，名义价值直接取 `oiUsd`，无需自行换算。
 - `www.okx.com` 可达；**`aws.okx.com` 在本开发机不可达**，base URL 固定用 `www.okx.com`。
 
+**私有端点的实测发现（2026-09-25，模拟盘）**：
+
+| 项 | 实测结果 | 影响 |
+|---|---|---|
+| `posMode` | **`net_mode`** | `posSide` 恒为 `net`——展示与统计都必须按它分支，不能假设一定有 `long`/`short` |
+| `account/positions` 的 `notionalUsd` | **OKX 直接提供** | 名义价值直接取它，比自行用 `ctVal` 换算更准；`ctVal` 只用于算「币数量」 |
+| `liqPx` | 全仓模式下为 **空串** | 又一次空串陷阱，必须映射为 `None` |
+| `perm` | 实测 `read_only,trade` | 判定只读**不能写成等值判断**（`== "read_only"`），否则对方新增权限项时会静默失效 |
+| `account/config` 的 `autoLoan` | 是 **JSON 布尔**，不是字符串 | OKX 在同一响应里混用类型，模型只声明需要的字段即可（serde 忽略未知字段） |
+| 模拟盘密钥 | 实盘端点返回 `50101 APIKey does not match current environment` | 环境不匹配的错误码明确，可据此判断密钥属于哪个环境 |
+
 #### 6.1.3 指标历史可得性矩阵 ⭐
 
 **这是复盘模式的地基。** 不是所有指标都能还原到过去——必须对用户诚实：
@@ -603,15 +614,29 @@ pub trait Vault {
 }
 ```
 
-- 后端：`tauri-plugin-stronghold`，argon2 密码派生，vault 文件位于 `app_local_data_dir()/vault.hold`。
-- **只从 Rust 侧调用**：插件的 JS 命令在 `capabilities/default.json` 里**不放行**，避免 WebView 直接读写密钥。
-- 存储布局：`cred:{uuid}` → JSON `{api_key, secret_key, passphrase, label, env, created_at}`。SQLite 的 `api_credentials` 表**只存元数据**，永不存明文。
-- 自动锁定：默认 15 分钟无操作后 `lock()`（可配置）。锁定时清空内存中的密钥副本。
-- `Cargo.toml` 需要（官方文档提示的上游 bug 规避）：
-  ```toml
-  [profile.dev.package.scrypt]
-  opt-level = 3
-  ```
+- 后端：`tauri-plugin-stronghold` 的 **Rust API**（`Stronghold::new` + `kdf::KeyDerivation::argon2`），
+  vault 文件位于 `app_local_data_dir()/vault.hold`，argon2 的 salt 位于同目录 `vault-salt.txt`。
+- **比设计文档原本的要求更严**：原措辞是「插件的 JS 命令不在 `capabilities` 里放行」，
+  而实现上**根本没有注册这个插件**——它的 JS 命令不存在，WebView 连「尝试读写密钥」
+  这个能力都没有。`capabilities/default.json` 仍然只有 `core:default`。
+- **锁定即丢弃**：`lock()` 直接 drop 已解锁的 Stronghold，密钥材料不留在内存里等着被读取。
+- 存储布局：`cred:{id}` → JSON `{api_key, secret_key, passphrase, demo}`。
+  SQLite 的 `api_credentials` 表**只存掩码与探测结果**，永不存明文。
+- 凭据类型 `Credentials` 刻意**不实现 `Clone`**，并手写 `Debug` 遮蔽全部密文字段——
+  一旦能被 `{:?}` 打印或随手复制，就迟早会出现在日志、错误信息或崩溃转储里（有测试守住）。
+- 每次变更后**显式 `save()`**：Stronghold 的快照是显式提交的，忘了它会让
+  「看起来保存成功了」的凭据在重启后凭空消失（有真实文件系统的往返测试守住）。
+- **client 的三步解析顺序不可调换**：`get_client` → `load_client` → `create_client`。
+  `get_client` 只查**内存中的会话 client**（源码原话：*in session client, not being
+  persisted in a Snapshot*），`load_client` 才从**快照**加载。少了中间一步，重新解锁时
+  第一步必然失败，于是 `create_client` 会**新建一个空 client 顶掉快照里的那个**——
+  表现为「凭据保存成功，重启后凭空消失」。这个 bug 由真实文件系统的往返测试抓到，
+  纯内存实现根本测不出来（这也是为什么测试刻意用真实临时目录而不是 mock）。
+- ⚠️ 构建依赖：Stronghold 经由 `libsodium-sys-stable` **从源码编译 libsodium**，
+  因此交叉编译到 Windows/Android 时各自都需要可用的 C 工具链（CI 里已具备）。
+
+> **未实现**：设计文档原计划的「15 分钟无操作自动锁定」。它需要前端定时器与活动检测，
+> 属于后续补充；当前锁定是显式动作（界面提供锁定按钮）。此处如实标注，不假装已有。
 
 ---
 
@@ -982,6 +1007,15 @@ TS_RS_EXPORT_DIR = { value = "src/lib", relative = true }
 这一步是必需的：ts-rs 的 `#[ts(export_to = "...")]` 是**相对于 `TS_RS_EXPORT_DIR`** 解析的（默认 `./bindings`），不显式固定的话本地与 CI 的导出位置会不一致——而类型契约漂移正是 CI 要拦的东西，导出路径若依赖环境变量就失去了意义。
 
 CI 中校验生成结果与提交版本一致（`cargo test` 触发导出 → `git diff --exit-code -- src/lib/types.ts`），防止前后端类型漂移。**已验证本地可复现：`cargo test` 后 `git diff` 为空。**
+
+> ⚠️ **已知陷阱（实测踩过）**：ts-rs 的 `#[ts(export)]` 会为**每个类型**生成一个独立的导出测试，
+> 而它们写同一个文件时是「第一个截断、后续追加」。因此**带过滤地跑测试**
+> （例如 `cargo test --lib vault`）会把这个文件**截断成只剩匹配到的那一个类型**——
+> 实测中 16 个类型被截成了 1 个，而且丢失的是**尚未提交**的内容，`git checkout` 也救不回来。
+>
+> 约定：**提交前必须跑完整的 `cargo test`**；CI 的 `git diff --exit-code -- src/lib/types.ts`
+> 会拦住被截断的文件进入提交。这不是可以靠小心规避的问题，而是工具链的固有行为——
+> 所以把它写在这里，而不是指望每个人都记得。
 
 ---
 
@@ -1397,6 +1431,19 @@ MARKETLENS_BIN=src-tauri/target/release/marketlens scripts/headless-smoke.sh /tm
 
 **验收边界（已确认）**：本机验证 Linux 桌面端；**Windows 与 Android 的构建验证交给 CI**（`windows-latest` 与 `ubuntu + Android SDK/NDK` 才是这两端的原生环境），运行验证由用户在其设备上完成。
 
+#### 14.1.1 密码派生必须优化编译（实测踩过）
+
+`src-tauri/Cargo.toml` 里有四个 `[profile.dev.package.*]` 的 `opt-level = 3` 覆盖：
+`argon2`、`rust-argon2`、`scrypt`、`libsodium-sys-stable`。
+
+没有它们时，**单个 vault 往返测试耗时 9 分钟**；加上后降到 **15 秒**（60 倍差距）。
+原因是 argon2 是计算密集型纯 Rust 实现，`opt-level = 0` 让它慢两三个数量级；
+树里同时存在两个 argon2 实现（插件用 `argon2`，`iota_stronghold` 内部用 `rust-argon2`），
+所以两者都要覆盖。
+
+这属于「功能正常但体验不可用」的问题：用户解锁密钥库要等几分钟，会以为应用卡死。
+设计文档原本只提到 `scrypt` 一项（来自插件文档的上游 bug 提示），实际需要覆盖四个包。
+
 ---
 
 ## 15. 里程碑
@@ -1405,7 +1452,7 @@ MARKETLENS_BIN=src-tauri/target/release/marketlens scripts/headless-smoke.sh /tm
 |---|---|---|
 | ~~**M0 骨架**~~ ✅ **已完成** | Tauri v2 双端空壳、SQLite 迁移、ts-rs 类型生成、CI 骨架 | **实际验收（2026-09-25）**：Linux 桌面端真实启动，界面显示 应用版本 0.1.0 / 核心版本 0.1.0 / 数据库 Schema 版本 1 / 运行平台 linux，IPC 徽章为「通道正常」。Windows 与 Android 的构建验证按 §14.1 交给 CI |
 | ~~**M1 实盘**~~ ✅ **已完成** | OKX 公开数据按需拉取、指标计算、状态分类、缓存层、实盘页 | **实际验收（2026-09-25）**：实盘页同时显示 BTC/ETH/SOL 的 17 项指标、状态徽章与触发信号，数据取自真实 OKX API；指标数值经**独立 Python 实现逐位交叉验证**（相对差全部 `0.00e+00`）。详见 §15.2 |
-| **M2 账户与仓位** | vault、凭据管理、首次启动引导（3 步，含标的集选择）、当前仓位、权益、本地留痕 | 冷启动走完 3 步引导；录入只读 Key 后正确显示未平仓位与权益；非只读 Key 有警示；留痕正常写入 |
+| ~~**M2 账户与仓位**~~ ✅ **已完成** | vault、凭据管理、首次启动引导（3 步，含标的集选择）、当前仓位、权益、本地留痕 | **实际验收（2026-09-25）**：在无头环境**真实走完 3 步引导** → 主界面 → 账户页显示模拟盘真实权益与持仓；非只读密钥触发红色警示；本地留痕写入成功；冷重启只要求解锁。详见 §15.3 |
 | **M3 采集计划器** | FetchPlan 展开、分页迭代器、并发执行、进度事件、断点续传、可得性矩阵 | 复盘 30 天 2 标的 ≈ 60 请求在 10 秒内完成；切后台再回前台能续传；超出窗口的指标被正确标记为 Unavailable |
 | **M4 复盘管线** | 时段市场状态重建、历史仓位双源合并、关键时点归因、统计 | 能查到官方窗口内历史仓位；逐笔仓位都带开仓时刻状态（或明确标注不可得）；按 regime 分组统计正确 |
 | **M5 提示词** | minijinja 集成、双模板集（4 个内置模板）、双上下文装配、隐私分级、模板编辑器、导出 | 4 模板 × 3 隐私等级全部通过黄金测试；L2 输出无金额；不可得字段渲染为「数据不可得」 |
@@ -1428,7 +1475,61 @@ MARKETLENS_BIN=src-tauri/target/release/marketlens scripts/headless-smoke.sh /tm
 - **通过的检查**：Rust 51 项单元测试 + 2 项联网测试（`#[ignore]`）、`clippy -D warnings` 零警告、`fmt --check`、前端 28 项测试、`tsc` 双配置、`vite build`。
 - **未直接观察**：M1 原验收标准里的「30 秒内二次进入命中缓存」——界面只在挂载时做一次非强制拉取，无头截图无法模拟「切走再回来」。缓存语义由 `LiveCache` 的单元测试覆盖（TTL 边界、`cache_hit` 标记、覆盖写入），命令侧接线为 3 行。**这一点如实记录，不用间接证据充当直接证据。**
 
-**关键路径**：M1 → M3 → M4 → M5。M2 可与 M1 并行。M3（采集计划器）是整个复盘能力的技术核心，也是最容易低估工期的部分。
+### 15.3 M2 验收记录（2026-09-25）
+
+#### 怎么做到「真实走完引导」的
+
+引导需要键盘输入，而无头截图无法输入，本机也没有 `xdotool` / `xautomation`。因此新增了
+`tools/xshot/src/bin/xtype.rs`——用 XTEST 扩展注入键鼠事件（字符 → keycode 的映射
+从当前键盘布局实时查询，不硬编码键位表）。配合 `xshot` 截图，就能在无头环境里
+驱动完整 UI 流程。**这补齐了 mock 测试覆盖不到的一环**：jsdom 测试把 IPC 全 mock 掉了，
+前后端参数形状不匹配这类问题只有在真实 IPC 上才暴露。
+
+#### 逐步验证到的内容
+
+| 步骤 | 证据 |
+|---|---|
+| 冷启动进引导 | 第 1 步显示「主密码无法找回…没有任何后门或恢复通道」警示 + 双密码 + 「我已了解」勾选三道闸门 |
+| **前端校验真的会拦** | 故意留空提交 → 「主密码不能为空。」；两次不一致 → 「两次输入的密码不一致。」，按钮保持禁用 |
+| 创建密钥库 | 日志 `INFO 密钥库已解锁 path=…/vault.hold` |
+| 凭据保存与探测 | 界面显示「已保存，元数据如下（**明文密钥不回传前端**）`abcd****ef12` 模拟盘」；UID `1234****5678`；持仓模式「净持仓」 |
+| **非只读密钥警示** | 后端 `WARN 凭据包含交易权限，非只读 perm=read_only,trade`；界面红色警示原文：「本应用在类型层面不存在任何私有 POST 能力，因此无法用它下单；但建议改用只读密钥。」 |
+| 标的集选择 | 真实候选列表按 24h 成交额降序（ETH $6.65B / BTC $6.64B / SOL $1.18B…），**预勾选正好是 BTC/ETH/SOL**，显示「当前 3 / 10」 |
+| 完成引导 → 主界面 | 实盘页刷新 `instruments=3 warnings=0`；出现「实盘 / 账户」双标签与「重新配置」入口 |
+| 账户页 | 总权益 $104,136.21 / 可用权益 $101,000.02 / 未实现盈亏 $3.25 / 名义价值 $590.29 / **持仓模式 净持仓**；币种明细 4 条；持仓 SOL-USDT-SWAP **净持仓·全仓·3x** +1.66% |
+| 本地留痕 | 界面「近 30 天有 1 次留痕，记录连续。」；数据库 `position_trace` 1 条 |
+| 冷重启 | 只显示「解锁密钥库」，**不再重走 3 步** |
+
+#### 数据库落盘证据（模拟盘真实数据）
+
+```text
+settings:  watchlist = ["ETH-USDT-SWAP","BTC-USDT-SWAP","SOL-USDT-SWAP"]
+           onboarding_done = true
+凭据元数据: T1 / demo / abcd****ef12 / read_only,trade / 1234****5678   ← 只有掩码，无明文
+留痕条数:   1
+```
+
+#### 本轮发现并修掉的两个真实缺陷
+
+1. **Stronghold client 解析顺序导致凭据丢失**（§6.5）。`get_client` 只查内存中的会话
+   client，`load_client` 才从快照加载。少了中间一步，重新解锁时会**新建空 client 顶掉
+   快照里的那个**——「保存成功，重启后消失」。由真实文件系统的往返测试抓到。
+2. **argon2 未优化导致解锁慢 60 倍**（§14.1.1）。dev 构建下单个 vault 往返测试耗时
+   **9 分钟**，加 `opt-level = 3` 覆盖后 **15 秒**。
+
+另有一个**设计缺口由前端子代理指出**：`settings.onboarding_done` 在设计文档 §6.9 里
+写了、但 IPC 清单里没有读写它的命令。后果是每次冷启动都会重走 3 步引导。已补
+`bootstrap_state` / `onboarding_complete` 两个命令，并让 `watchlist_candidates` 的
+预勾选取自**当前已保存的标的集**（否则用户再次进入引导时，点「下一步」会把选择
+静默重置回默认值）。
+
+#### 未验证 / 已知不足
+
+- **未实现**：§6.5 原计划的「15 分钟无操作自动锁定」。当前锁定是显式动作。
+- **未验证**：`credentials_delete` 与「重新配置」入口的完整往返（本轮未走）。
+- **UX 待改**：账户概览把全仓模式的 `mgnRatio` 直接按百分比显示（实测 3116993.30%），
+  数值本身没错（OKX 也这么给），但对全仓仓位没有可读性——后续应改为倍数或仅逐仓显示。
+- 本机仍无法验证 Windows / Android 的构建与运行（§14.1）。
 
 ---
 

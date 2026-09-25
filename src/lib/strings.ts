@@ -113,6 +113,194 @@ export const S = {
     },
   },
 
+  // 主界面顶部标签（已解锁后）
+  nav: {
+    live: "实盘",
+    account: "账户",
+    configure: "重新配置",
+  },
+
+  // 启动期（读取密钥库状态）的占位与错误
+  boot: {
+    loading: "正在读取密钥库状态…",
+    errorTitle: "启动失败",
+  },
+
+  // 首次启动引导（设计文档 §6.9 的三步流程）
+  onboarding: {
+    title: "首次使用引导",
+    subtitle: "三步完成初始化：密钥库 → OKX 凭据 → 关注标的",
+    unlockTitle: "解锁密钥库",
+    unlockSubtitle: "输入主密码以继续。",
+    reconfigureTitle: "重新配置",
+    reconfigureSubtitle: "更新 OKX 凭据或关注标的。",
+    stepIndicator: (n: number, total: number) => `第 ${n} / ${total} 步`,
+    finishing: "正在完成引导…",
+    steps: {
+      vault: "创建 / 解锁密钥库",
+      credential: "录入 OKX 凭据",
+      watchlist: "选择标的",
+    },
+    next: "下一步",
+    errorCode: (code: string) => `错误代码：${code}`,
+
+    vault: {
+      createTitle: "创建密钥库",
+      createHint:
+        "密钥库用于在本机加密保存 OKX API 凭据。主密码只在本地派生密钥，不会上传到任何服务器。",
+      unlockTitle: "解锁密钥库",
+      unlockHint: "输入主密码以解密已保存的凭据。",
+      password: "主密码",
+      confirm: "确认主密码",
+      empty: "主密码不能为空。",
+      mismatch: "两次输入的密码不一致。",
+      irrecoverableTitle: "主密码无法找回",
+      irrecoverable:
+        "主密码无法找回，丢失即无法读取已存凭据。请自行妥善备份——本应用没有任何后门或恢复通道。",
+      ack: "我已了解：主密码丢失后无法恢复",
+      create: "创建并解锁",
+      unlock: "解锁",
+      working: "处理中…",
+    },
+
+    credential: {
+      title: "录入 OKX 只读凭据",
+      hint:
+        "建议使用只读 API Key。凭据仅保存在本机密钥库中，界面只显示掩码，不提供任何查看明文的功能。",
+      label: "备注名",
+      labelPlaceholder: "例如：主账户只读",
+      apiKey: "API Key",
+      secretKey: "Secret Key",
+      passphrase: "Passphrase",
+      demo: "模拟盘",
+      demoHint: "开启后请求会带模拟盘标记（x-simulated-trading）。",
+      save: "保存并测试",
+      saving: "保存中…",
+      testing: "测试中…",
+      required: "备注名、API Key、Secret Key、Passphrase 都不能为空。",
+      skipNote: "可跳过：跳过也能只看行情（不连接账户）。",
+      skip: "跳过（仅看行情）",
+      testTitle: "凭据测试结果",
+      probeOk: "凭据可用",
+      probeFail: "凭据不可用",
+      readOnly: "该密钥为只读权限。",
+      readOnlyFalseTitle: "该密钥带交易权限",
+      readOnlyFalse:
+        "该密钥带交易权限。本应用在类型层面不存在任何私有 POST 能力，因此无法用它下单；但建议改用只读密钥。",
+      uid: "UID",
+      posMode: "持仓模式",
+      permissions: "权限",
+      retryTest: "重试测试",
+      saved: "已保存，元数据如下（明文密钥不回传前端）。",
+    },
+
+    watchlist: {
+      title: "选择关注标的",
+      hint: "按 24h 成交额排序的 Top 20 永续合约，已预勾选 BTC / ETH / SOL，可自由增删。",
+      loading: "正在拉取候选标的…",
+      empty: "没有可用候选标的。",
+      count: (n: number, max: number) => `当前 ${n} / ${max}`,
+      needOne: "至少选择 1 个标的。",
+      tooMany: (max: number) =>
+        `最多选择 ${max} 个标的。标的数会直接乘进复盘请求量（3 个标的约 22 个请求，10 个就到 70+），超限无法提交。`,
+      volume: "24h 成交额",
+      submit: "保存并进入主界面",
+      saving: "保存中…",
+    },
+  },
+
+  // 账户 / 仓位页（M2）
+  account: {
+    title: "账户与仓位",
+    subtitle: "按需采集 · 不做自动轮询",
+
+    refresh: "刷新",
+    refreshing: "刷新中…",
+    retry: "重试",
+    loading: "正在拉取账户快照…",
+    loadingHint: "会向 OKX 拉取一次账户概览与全部持仓。",
+
+    credential: "凭据",
+    noCredentials: "尚未添加任何凭据。",
+    noCredentialsHint:
+      "请先在首次启动引导中添加 OKX 只读凭据，然后回到本页刷新。",
+    addCredential: "去添加凭据",
+    envLive: "实盘",
+    envDemo: "模拟盘",
+
+    overviewTitle: "账户概览",
+    positionsTitle: "持仓",
+    noPositions: "当前没有持仓。",
+    currenciesTitle: "币种明细",
+    traceTitle: "本地留痕覆盖度",
+    traceGap: "数据不连续，持仓时长可能不精确。",
+    warningsTitle: "本次刷新的问题",
+    fetchedAt: (time: string) => `拉取于 ${time}`,
+    positionsCount: (n: number) => `共 ${n} 个持仓`,
+
+    // 概览字段
+    overview: {
+      totalEq: "总权益",
+      availEq: "可用权益",
+      upl: "未实现盈亏",
+      mgnRatio: "保证金率",
+      notional: "名义价值",
+      posMode: "持仓模式",
+    },
+
+    // 币种明细列
+    currency: {
+      ccy: "币种",
+      eq: "权益",
+      eqUsd: "权益（USD）",
+      availBal: "可用",
+      cashBal: "现金",
+    },
+
+    // 持仓字段
+    position: {
+      side: "方向",
+      mgnMode: "保证金模式",
+      lever: "杠杆",
+      contracts: "张数",
+      sizeBase: "币数量",
+      avgPx: "均价",
+      markPx: "标记价",
+      liqPx: "强平价",
+      notional: "名义价值",
+      upl: "未实现盈亏",
+      uplRatio: "收益率",
+      mgnRatio: "保证金率",
+    },
+
+    // Rust 原始枚举/字符串 → 中文
+    posMode: {
+      net_mode: "净持仓",
+      long_short_mode: "长空双向",
+    },
+    posSide: {
+      long: "多头",
+      short: "空头",
+      net: "净持仓",
+    },
+    mgnMode: {
+      cross: "全仓",
+      isolated: "逐仓",
+    },
+    unknown: "未知",
+
+    // 数据不可得 / 空值
+    na: "数据不可得",
+    liqNone: "无",
+
+    // 错误态
+    errorTitle: "拉取失败",
+    errorCode: (code: string) => `错误代码：${code}`,
+    errorNotRetryable: "该错误重试无法自愈，请检查配置或网络环境。",
+    refreshFailedTitle: "刷新失败",
+    refreshFailedHint: "下方仍展示上一次成功拉取的数据。",
+  },
+
   // 页脚：紧凑的版本信息（M0 验收路径，保留为常驻诊断信息）
   footer: {
     version: (v: string) => `版本 ${v}`,

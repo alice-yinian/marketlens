@@ -4,7 +4,9 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use tauri::{AppHandle, Manager};
 
+use crate::credentials::CredentialMeta;
 use crate::error::{AppError, AppResult};
+use crate::position::trace::TraceRow;
 
 /// 数据库句柄。
 ///
@@ -16,6 +18,20 @@ pub struct Db {
 }
 
 impl Db {
+    /// 仅测试用：在内存库上打开并执行迁移。
+    ///
+    /// `max_connections(1)` 是必需的：SQLite 的内存库是**每连接一份**的，
+    /// 多连接会让「建好的表」在另一个连接里凭空消失。
+    #[cfg(test)]
+    pub async fn open_in_memory() -> AppResult<Self> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        sqlx::migrate!("./migrations").run(&pool).await?;
+        Ok(Self { pool })
+    }
+
     /// 打开（必要时创建）数据库并执行迁移。迁移是幂等的，每次启动都跑。
     pub async fn open(app: &AppHandle) -> AppResult<Self> {
         let dir = app
@@ -62,5 +78,158 @@ impl Db {
             .fetch_optional(&self.pool)
             .await?;
         Ok(value)
+    }
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> AppResult<()> {
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        )
+        .bind(key)
+        .bind(value)
+        .bind(crate::storage::now_ms())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    // ---- 凭据元数据 -------------------------------------------------------
+    // 明文密钥永远不经过这里：本表只存掩码与探测结果，明文只进 Stronghold。
+
+    pub async fn upsert_credential(&self, meta: &CredentialMeta) -> AppResult<()> {
+        sqlx::query(
+            "INSERT INTO api_credentials
+                (id, label, env, api_key_masked, permissions, uid_masked,
+                 last_ok_at, last_error, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+                label = excluded.label,
+                env = excluded.env,
+                api_key_masked = excluded.api_key_masked,
+                permissions = excluded.permissions,
+                uid_masked = excluded.uid_masked,
+                last_ok_at = excluded.last_ok_at,
+                last_error = excluded.last_error",
+        )
+        .bind(&meta.id)
+        .bind(&meta.label)
+        .bind(&meta.env)
+        .bind(&meta.api_key_masked)
+        .bind(&meta.permissions)
+        .bind(&meta.uid_masked)
+        .bind(meta.last_ok_at)
+        .bind(&meta.last_error)
+        .bind(meta.created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_credentials(&self) -> AppResult<Vec<CredentialMeta>> {
+        let rows = sqlx::query_as::<_, CredentialMeta>(
+            "SELECT id, label, env, api_key_masked, permissions, uid_masked,
+                    last_ok_at, last_error, created_at
+             FROM api_credentials
+             ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    pub async fn delete_credential_meta(&self, id: &str) -> AppResult<()> {
+        sqlx::query("DELETE FROM api_credentials WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// 记录一次探测结果。`error` 为 `None` 表示探测成功，此时刷新 `last_ok_at`。
+    pub async fn record_credential_probe(
+        &self,
+        id: &str,
+        permissions: Option<&str>,
+        uid_masked: Option<&str>,
+        error: Option<&str>,
+    ) -> AppResult<()> {
+        let now = crate::storage::now_ms();
+        sqlx::query(
+            "UPDATE api_credentials
+             SET permissions = COALESCE(?, permissions),
+                 uid_masked = COALESCE(?, uid_masked),
+                 last_ok_at = CASE WHEN ? IS NULL THEN ? ELSE last_ok_at END,
+                 last_error = ?
+             WHERE id = ?",
+        )
+        .bind(permissions)
+        .bind(uid_masked)
+        .bind(error)
+        .bind(now)
+        .bind(error)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    // ---- 本地留痕 ---------------------------------------------------------
+
+    /// 最近一次留痕的时间戳。
+    pub async fn last_position_trace_at(&self) -> AppResult<Option<i64>> {
+        let value: Option<i64> = sqlx::query_scalar("SELECT MAX(ts) FROM position_trace")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(value)
+    }
+
+    /// 写入一批留痕。
+    ///
+    /// 用 `INSERT OR REPLACE`：主键是 `(ts, pos_id)`，同一毫秒内的重复刷新
+    /// 不应该让整批写入失败。
+    pub async fn insert_position_traces(&self, rows: &[TraceRow<'_>]) -> AppResult<()> {
+        let mut tx = self.pool.begin().await?;
+
+        for row in rows {
+            sqlx::query(
+                "INSERT OR REPLACE INTO position_trace
+                    (ts, pos_id, inst_id, pos_side, mgn_mode, lever, contracts,
+                     avg_px, mark_px, liq_px, upl, upl_ratio, mgn_ratio,
+                     created_at, updated_at, gap_before)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(row.ts)
+            .bind(row.pos_id)
+            .bind(row.inst_id)
+            .bind(row.pos_side)
+            .bind(row.mgn_mode)
+            .bind(row.lever)
+            .bind(row.contracts)
+            .bind(row.avg_px)
+            .bind(row.mark_px)
+            .bind(row.liq_px)
+            .bind(row.upl)
+            .bind(row.upl_ratio)
+            .bind(row.mgn_ratio)
+            .bind(row.created_at)
+            .bind(row.updated_at)
+            .bind(i64::from(row.gap_before))
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 某时间点之后的全部留痕时间戳（升序、去重），用于统计覆盖度与间隙。
+    pub async fn position_trace_timestamps(&self, since: i64) -> AppResult<Vec<i64>> {
+        let stamps: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT ts FROM position_trace WHERE ts >= ? ORDER BY ts ASC",
+        )
+        .bind(since)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(stamps)
     }
 }

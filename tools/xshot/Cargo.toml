@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-# 仅开发用：无头环境下抓 X11 窗口截图。不参与应用构建，也不进 CI 产物。
+# 仅开发用：无头环境下抓 X11 窗口截图 + 注入键鼠输入。
+# 不参与应用构建，也不进 CI 产物。
+#
+# xtest feature 提供输入注入（键盘/鼠标），是驱动真实 UI 流程所必需的——
+# 本机没有 xdotool / xautomation 可用。
 [dependencies]
-x11rb = "0.13"
+x11rb = { version = "0.13", features = ["xtest"] }

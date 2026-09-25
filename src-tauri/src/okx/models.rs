@@ -15,7 +15,177 @@ use serde::Deserialize;
 
 use crate::okx::de;
 
-/// 统一响应信封。OKX 用字符串 `code` 表示成败，只有 `"0"` 是成功。
+// ---------------------------------------------------------------------------
+// 私有端点（M2）
+// ---------------------------------------------------------------------------
+
+/// `GET /api/v5/public/instruments`
+///
+/// 张数 → 币数量的换算依赖这里的 `ctVal` / `ctMult`。**换算错了会直接给用户
+/// （以及后续的 AI）喂错数据**，所以这两个字段必须来自真机而非记忆。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Instrument {
+    pub inst_id: String,
+    /// 每张合约对应的币数量
+    #[serde(deserialize_with = "de::num")]
+    pub ct_val: f64,
+    /// `ctVal` 的币种（币本位合约时不是计价币）
+    #[serde(default)]
+    pub ct_val_ccy: String,
+    /// 合约乘数，实测为 `"1"`；缺失时按 1 处理
+    #[serde(deserialize_with = "de::num", default = "one")]
+    pub ct_mult: f64,
+    #[serde(default)]
+    pub settle_ccy: String,
+    #[serde(default)]
+    pub state: String,
+}
+
+fn one() -> f64 {
+    1.0
+}
+
+/// `GET /api/v5/account/config`
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountConfig {
+    pub uid: String,
+    #[serde(default)]
+    pub main_uid: String,
+    #[serde(default)]
+    pub acct_lv: String,
+    /// 权限，逗号分隔。实测形如 `read_only,trade`
+    pub perm: String,
+    /// `net_mode`（净持仓）或 `long_short_mode`（长空双向）
+    pub pos_mode: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+impl AccountConfig {
+    /// 是否**只读**。
+    ///
+    /// 只判断是否含 `trade`，而不是判断是否等于 `read_only`：OKX 的权限串
+    /// 可能包含更多项，写成等值判断会在对方新增权限项时静默失效。
+    pub fn is_read_only(&self) -> bool {
+        !self
+            .perm
+            .split(',')
+            .any(|item| item.trim().eq_ignore_ascii_case("trade"))
+    }
+
+    pub fn is_net_mode(&self) -> bool {
+        self.pos_mode == "net_mode"
+    }
+}
+
+/// `GET /api/v5/account/balance`
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountBalance {
+    /// 账户总权益（USD）
+    #[serde(deserialize_with = "de::num")]
+    pub total_eq: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub iso_eq: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub adj_eq: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub avail_eq: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub upl: f64,
+    #[serde(deserialize_with = "de::opt_num", default)]
+    pub mgn_ratio: Option<f64>,
+    #[serde(deserialize_with = "de::opt_num", default)]
+    pub imr: Option<f64>,
+    #[serde(deserialize_with = "de::opt_num", default)]
+    pub mmr: Option<f64>,
+    #[serde(deserialize_with = "de::opt_num", default)]
+    pub notional_usd: Option<f64>,
+    #[serde(default)]
+    pub details: Vec<BalanceDetail>,
+}
+
+/// 账户余额中的单个币种明细。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BalanceDetail {
+    pub ccy: String,
+    #[serde(deserialize_with = "de::num")]
+    pub eq: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub eq_usd: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub avail_bal: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub cash_bal: f64,
+    #[serde(deserialize_with = "de::opt_num", default)]
+    pub iso_eq: Option<f64>,
+}
+
+/// `GET /api/v5/account/positions`
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OkxPosition {
+    pub inst_id: String,
+    #[serde(default)]
+    pub inst_type: String,
+    pub pos_id: String,
+    /// `long` | `short` | `net`——净持仓模式下恒为 `net`
+    pub pos_side: String,
+    /// `cross` | `isolated`
+    pub mgn_mode: String,
+    #[serde(deserialize_with = "de::num")]
+    pub lever: f64,
+    /// **张数**（合约），不是币数量
+    #[serde(deserialize_with = "de::num")]
+    pub pos: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub avg_px: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub mark_px: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub last: f64,
+    #[serde(deserialize_with = "de::opt_num", default)]
+    pub idx_px: Option<f64>,
+    /// 全仓模式下实测为空串
+    #[serde(deserialize_with = "de::opt_num", default)]
+    pub liq_px: Option<f64>,
+    #[serde(deserialize_with = "de::num")]
+    pub upl: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub upl_ratio: f64,
+    #[serde(deserialize_with = "de::opt_num", default)]
+    pub mgn_ratio: Option<f64>,
+    /// OKX 直接给出的 USD 名义价值——不必自己用 ctVal 换算，更准
+    #[serde(deserialize_with = "de::num")]
+    pub notional_usd: f64,
+    #[serde(deserialize_with = "de::opt_num", default)]
+    pub imr: Option<f64>,
+    #[serde(deserialize_with = "de::opt_num", default)]
+    pub mmr: Option<f64>,
+    #[serde(deserialize_with = "de::num")]
+    pub fee: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub funding_fee: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub realized_pnl: f64,
+    #[serde(deserialize_with = "de::ts")]
+    pub c_time: i64,
+    #[serde(deserialize_with = "de::ts")]
+    pub u_time: i64,
+    /// 保证金币种
+    #[serde(default)]
+    pub ccy: String,
+    /// 币本位合约的持仓币种；U 本位为空串
+    #[serde(default)]
+    pub pos_ccy: String,
+}
+
+// ---------------------------------------------------------------------------
+// 公开端点的响应模型（M1）
+// ---------------------------------------------------------------------------
 ///
 /// 显式声明泛型 bound：`data` 上的 `#[serde(default)]` 会让 serde 的 derive
 /// 给 `T` 加上 `Default` 约束，而业务类型不该为了能反序列化而去实现 `Default`。
@@ -255,5 +425,98 @@ mod tests {
         ];
         // 一个坏行不应该让整段序列消失
         assert_eq!(parse_single_value_series(&rows).len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // 私有端点：夹具全部来自 2026-09-25 对模拟盘的真实响应
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn account_config_detects_trade_permission() {
+        // 实测响应（含 autoLoan 这个 JSON 布尔字段——类型混合不应破坏解析）
+        let raw = r#"{"code":"0","data":[{"acctLv":"3","acctStpMode":"cancel_maker",
+            "autoLoan":false,"ip":"","label":"T1","mainUid":"495047549133190261",
+            "perm":"read_only,trade","posMode":"net_mode","settleCcy":"USDC",
+            "uid":"123456789012345678"}],"msg":""}"#;
+
+        let env: Envelope<AccountConfig> = serde_json::from_str(raw).expect("反序列化失败");
+        let config = &env.data[0];
+
+        assert_eq!(config.uid, "123456789012345678");
+        assert_eq!(config.pos_mode, "net_mode");
+        assert!(config.is_net_mode(), "实测该账户就是净持仓模式");
+        assert!(
+            !config.is_read_only(),
+            "perm 含 trade，必须判定为非只读——这是红色警示的依据"
+        );
+
+        // 只读密钥的判定
+        let read_only = AccountConfig {
+            perm: "read_only".to_string(),
+            ..config.clone()
+        };
+        assert!(read_only.is_read_only());
+
+        // 权限串可能包含更多项，不能写成等值判断
+        let extra = AccountConfig {
+            perm: "read_only,trade,withdraw".to_string(),
+            ..config.clone()
+        };
+        assert!(!extra.is_read_only(), "含 trade 即非只读，即使还有其它权限");
+    }
+
+    #[test]
+    fn balance_maps_real_response() {
+        let raw = r#"{"code":"0","data":[{"adjEq":"101341.76693580001",
+            "availEq":"101146.08158380001","imr":"195.68535200000002","isoEq":"0",
+            "mgnRatio":"31386.740019438777","mmr":"2.93528028","notionalUsd":"587.056056",
+            "totalEq":"104287.33473580002","upl":"0","details":[
+              {"availBal":"4998.0379499","cashBal":"4998.0379499","ccy":"USDT",
+               "eq":"4998.0379499","eqUsd":"4997.238263828016","isoEq":"0"}]}],"msg":""}"#;
+
+        let env: Envelope<AccountBalance> = serde_json::from_str(raw).expect("反序列化失败");
+        let balance = &env.data[0];
+
+        assert!((balance.total_eq - 104287.33473580002).abs() < 1e-6);
+        assert!((balance.upl).abs() < 1e-9);
+        assert!(balance.mgn_ratio.is_some());
+        assert_eq!(balance.details.len(), 1);
+        assert_eq!(balance.details[0].ccy, "USDT");
+        assert!((balance.details[0].eq_usd - 4997.238263828016).abs() < 1e-6);
+    }
+
+    #[test]
+    fn position_maps_real_response() {
+        // 模拟盘 SOL-USDT-SWAP 的真实持仓（5 张，3 倍杠杆，全仓）
+        let raw = r#"{"code":"0","data":[{"adl":"1","avgPx":"117.43",
+            "cTime":"1790327749733","ccy":"USDT","fee":"-0.293575","fundingFee":"0",
+            "imr":"195.73333333333335","instId":"SOL-USDT-SWAP","instType":"SWAP",
+            "last":"117.43","lever":"3","liqPx":"","markPx":"117.44","mgnMode":"cross",
+            "mgnRatio":"31382.49985958607","mmr":"2.936","notionalUsd":"587.100176",
+            "pos":"5","posCcy":"","posId":"3953560806705233921","posSide":"net",
+            "realizedPnl":"-0.293575","uTime":"1790327749733","upl":"0.0499999999999545",
+            "uplRatio":"0.0002554713446303","idxPx":"117.492"}],"msg":""}"#;
+
+        let env: Envelope<OkxPosition> = serde_json::from_str(raw).expect("反序列化失败");
+        let position = &env.data[0];
+
+        assert_eq!(position.inst_id, "SOL-USDT-SWAP");
+        assert_eq!(position.pos_id, "3953560806705233921");
+        assert_eq!(
+            position.pos_side, "net",
+            "净持仓模式下 posSide 恒为 net，展示与统计都要按它分支"
+        );
+        assert_eq!(position.mgn_mode, "cross");
+        assert!((position.pos - 5.0).abs() < 1e-9, "pos 是张数，不是币数量");
+        assert!((position.lever - 3.0).abs() < 1e-9);
+        assert!((position.notional_usd - 587.100176).abs() < 1e-6);
+
+        // 全仓模式下 liqPx 实测为空串——必须变成 None 而不是解析失败
+        assert_eq!(position.liq_px, None, "空串 liqPx 应映射为 None");
+        assert!(position.idx_px.is_some());
+
+        assert_eq!(position.c_time, 1_790_327_749_733);
+        assert_eq!(position.u_time, 1_790_327_749_733);
+        assert!((position.realized_pnl + 0.293575).abs() < 1e-9);
     }
 }

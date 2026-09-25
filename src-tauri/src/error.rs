@@ -32,6 +32,12 @@ pub enum AppError {
     #[error("响应解析失败：{0}")]
     Decode(String),
 
+    #[error("密钥库已锁定，请先解锁")]
+    VaultLocked,
+
+    #[error("密钥库操作失败：{0}")]
+    Vault(String),
+
     #[error("{0}")]
     Config(String),
 }
@@ -55,6 +61,8 @@ impl AppError {
             AppError::Okx { .. } => "Okx",
             AppError::Http(_) => "Http",
             AppError::Decode(_) => "Decode",
+            AppError::VaultLocked => "VaultLocked",
+            AppError::Vault(_) => "Vault",
             AppError::Config(_) => "Config",
         }
     }
@@ -68,6 +76,8 @@ impl AppError {
             // OKX 业务错误是参数/权限问题，重试无意义；解析失败同理
             AppError::Okx { .. } => false,
             AppError::Decode(_) => false,
+            // 锁定与密钥库错误都需要用户动作，重试不会自愈
+            AppError::VaultLocked | AppError::Vault(_) => false,
             AppError::Database(_) | AppError::Io(_) | AppError::Http(_) => true,
         }
     }

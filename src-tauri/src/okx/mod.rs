@@ -6,7 +6,9 @@
 //!   * 限流按端点分组（既有按 IP 也有按 User ID 的规则），见 `ratelimit`
 
 pub mod client;
+pub mod credentials;
 pub mod de;
 pub mod endpoints;
 pub mod models;
 pub mod ratelimit;
+pub mod sign;

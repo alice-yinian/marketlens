@@ -12,18 +12,17 @@ pub const BASE_URL: &str = "https://www.okx.com";
 /// 限流分组。
 ///
 /// OKX 的限流规则既有按 IP 也有按 User ID，必须分开计数——用一个全局桶会让
-/// 私有端点的配额被公开行情吃掉。
-///
-/// M1 只有公开端点，因此下面三个分组**全部是 IP 作用域**；M2 接入私有账户端点时
-/// 会补一个 User ID 作用域的 `Account` 分组，届时 `quota()` 的初值同样要保守。
+/// 私有端点的配额被公开行情吃掉，反之亦然。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RateGroup {
-    /// 行情类（ticker / K 线 / 指数价）
+    /// 行情类（ticker / K 线 / 指数价）——按 IP
     Market,
-    /// 基础数据类（标记价 / 资金费率 / 持仓量）
+    /// 基础数据类（标记价 / 资金费率 / 持仓量）——按 IP
     Reference,
-    /// Rubik 统计类
+    /// Rubik 统计类——按 IP
     Rubik,
+    /// 私有账户端点——**按 User ID**，与上面三组互不侵占
+    Account,
 }
 
 impl RateGroup {
@@ -38,8 +37,20 @@ impl RateGroup {
             RateGroup::Reference => (20, 2_000),
             // 实测该分组最紧的端点是 rubik 系列
             RateGroup::Rubik => (5, 2_000),
+            // 公开可查的私有端点上限是 10 req/2s，这里取 8 留余量
+            RateGroup::Account => (8, 2_000),
         }
     }
+}
+
+/// 私有端点（需签名）。
+///
+/// 这里**只列 GET**。本应用不存在任何私有 POST 的调用点——「会不会偷偷下单」
+/// 这个问题在类型层面就有答案（ADR #6）。
+pub mod private {
+    pub const ACCOUNT_CONFIG: &str = "/api/v5/account/config";
+    pub const ACCOUNT_BALANCE: &str = "/api/v5/account/balance";
+    pub const ACCOUNT_POSITIONS: &str = "/api/v5/account/positions";
 }
 
 /// 公开端点（无需鉴权）
@@ -49,11 +60,15 @@ impl RateGroup {
 /// 提前登记没有调用方的路径只会变成死代码。
 pub mod public {
     pub const TICKER: &str = "/api/v5/market/ticker";
+    /// 全市场行情：引导第 3 步的候选标的排序依据
+    pub const TICKERS: &str = "/api/v5/market/tickers";
     pub const CANDLES: &str = "/api/v5/market/candles";
     pub const INDEX_TICKERS: &str = "/api/v5/market/index-tickers";
     pub const MARK_PRICE: &str = "/api/v5/public/mark-price";
     pub const FUNDING_RATE: &str = "/api/v5/public/funding-rate";
     pub const OPEN_INTEREST: &str = "/api/v5/public/open-interest";
+    /// 合约元数据：张数 → 币数量的换算依据
+    pub const INSTRUMENTS: &str = "/api/v5/public/instruments";
     pub const LS_ACCOUNT_RATIO: &str = "/api/v5/rubik/stat/contracts/long-short-account-ratio";
     pub const TAKER_VOLUME: &str = "/api/v5/rubik/stat/taker-volume";
 }
