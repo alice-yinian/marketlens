@@ -1444,7 +1444,21 @@ MARKETLENS_BIN=src-tauri/target/release/marketlens scripts/headless-smoke.sh /tm
 
 两个必须知道的点：
 
-1. **debug 构建会连接 `devUrl` 而不是内嵌前端资源**（Tauri 的正常行为），所以用 debug 二进制冒烟时必须先起 `npm run dev`（脚本的 `MARKETLENS_DEV=1` 会代劳）；release 构建才内嵌 `dist`。
+1. **裸 `cargo build`（无论 debug 还是 release）都会连接 `devUrl`，不内嵌前端资源**。
+   本文档原先写的是「release 构建才内嵌 `dist`」——**2026-09-25 实测证伪**：
+   `cargo build --release` 产出的二进制启动后报
+   `Could not connect to localhost: Connection refused`，因为它在连 `devUrl`。
+
+   要产出真正内嵌资源的发布件，必须走官方构建路径：
+
+   ```bash
+   npx tauri build --no-bundle    # 只出二进制，不打包（本机无打包工具时用这个）
+   npx tauri build                # 出二进制 + 安装包
+   ```
+
+   所以用二进制冒烟时：
+   - debug 二进制 → 必须先起 `npm run dev`（脚本的 `MARKETLENS_DEV=1` 会代劳）
+   - release 二进制 → 必须是 `tauri build` 产出的那个，裸 `cargo build --release` 的不算
 2. **无头环境下 WebKit 必须强制软件渲染**：`WEBKIT_DISABLE_COMPOSITING_MODE=1`、`WEBKIT_DISABLE_DMABUF_RENDERER=1`、`LIBGL_ALWAYS_SOFTWARE=1`，否则白屏或崩溃。
 
 **验收边界（已确认）**：本机验证 Linux 桌面端；**Windows 与 Android 的构建验证交给 CI**（`windows-latest` 与 `ubuntu + Android SDK/NDK` 才是这两端的原生环境），运行验证由用户在其设备上完成。
@@ -1592,8 +1606,10 @@ keytool -genkey -v -keystore ~/upload-keystore.jks \
 
 #### 已知的失败模式（清单的由来）
 
-- **debug 构建连 `devUrl` 而不是内嵌资源**：用 debug 二进制冒烟必须同时起 `npm run dev`，
-  否则白屏。这不是 bug，但会浪费半天去查「为什么白屏」。
+- **裸 `cargo build` 的产物连 `devUrl` 而不是内嵌资源**（debug 与 release 都一样）：
+  症状是窗口里一行 `Could not connect to localhost: Connection refused`。
+  冒烟必须用 `tauri build` 产出的二进制（§14.1）。这个坑我踩过一次——
+  当时以为是前端构建问题，实际是构建方式不对。
 - **无头环境必须强制软件渲染**（§14.1）：`WEBKIT_DISABLE_COMPOSITING_MODE=1` 等三项，
   否则白屏或崩溃。
 - **release 构建的 WebView 版本与开发机不同**：只在 release 上出现的渲染问题确实存在，
@@ -1611,7 +1627,7 @@ keytool -genkey -v -keystore ~/upload-keystore.jks \
 | ~~**M3 采集计划器**~~ ✅ **已完成** | FetchPlan 展开、分页迭代器、并发执行、进度事件、断点续传、可得性矩阵 | **实际验收（2026-09-25）**：30 天 × 3 标的 = **75 请求 / 5.6 秒**（验收线 10 秒）；二次执行 **0 请求**（续传生效）；可得性提示如实浮现；期间真实遇到 **429 并被退避重试救回**。详见 §15.4 |
 | ~~**M4 复盘管线**~~ ✅ **已完成** | 时段市场状态重建、历史仓位双源合并、关键时点归因、统计 | **实际验收（2026-09-25）**：真机跑通「采集 → 同步 → 合并 → 归因 → 统计 → 界面」全链；逐笔仓位绑定到开仓时刻状态（趋势向上/波动正常/多空均衡，开仓前 24h +4.63%）；按状态分组统计与费用侵蚀（89.8%）均正确。详见 §15.5 |
 | ~~**M5 提示词**~~ ✅ **已完成** | minijinja 集成、双模板集（4 个内置模板）、双上下文装配、隐私分级、模板编辑器、导出 | **实际验收（2026-09-25）**：4 模板 × 3 隐私等级全部通过黄金测试；L1/L2 输出无原始金额；不可得字段渲染为显式声明；界面无头跑通「选模板 → 切等级立即重生成 → 编辑 300ms 防抖重生成 → 复制/另存为」。详见 §15.6 |
-| **M6 发布** | 打包签名、诊断导出、缓存管理 UI、文档 | Win 安装包与 Android APK 可正常安装使用，冒烟清单全过 |
+| ~~**M6 发布**~~ ✅ **已完成（带保留）** | 打包签名、诊断导出、缓存管理 UI、文档 | **实际验收（2026-09-25）**：release 二进制（`tauri build --no-bundle`）无头跑通 5 个页签 + 诊断导出 + 缓存管理；诊断包人工核对无密钥/无金额。**Windows 与 Android 产物未实际构建过**（本机无对应工具链，§14.2），签名流程未经端到端验证——**首次跑通 CI 才算真正验证**。详见 §15.7 |
 
 ### 15.1 M0 验收记录（2026-09-25）
 
@@ -1898,7 +1914,105 @@ INFO 采集计划结束 requests=75 elapsed_ms=5612 cancelled=false
 - 导出用的是浏览器 Blob 下载，不是 `@tauri-apps/plugin-fs`——避免为 M5 引入
   新的原生依赖，也回避 Windows/Android 的路径差异。
 
-**关键路径**：M6。M5 已经能产出提示词，M6 要做打包签名、诊断导出与缓存管理。
+### 15.7 M6 验收记录（2026-09-25）
+
+#### release 构建与二进制冒烟
+
+```text
+npx tauri build --no-bundle
+  Finished `release` profile [optimized] target(s) in 1m 18s
+  Built application at: src-tauri/target/release/marketlens   （30.8 MB）
+```
+
+用这个二进制在无头环境跑通：**解锁 → 5 个页签 → 实盘真实行情 → 设置页 → 诊断导出**。
+（无头脚本 `scripts/headless-smoke.sh` 的 release 路径。）
+
+#### 界面跑起来才发现的两个问题
+
+1. **裸 `cargo build --release` 的产物连 `devUrl`，不内嵌前端资源**。
+   启动后窗口里只有一行 `Could not connect to localhost: Connection refused`。
+   本文档原先写的是「release 构建才内嵌 `dist`」——**被实测证伪**。
+   正确做法是走官方构建路径 `npx tauri build`（§14.1 已修正）。
+   这个坑很费时间：症状看起来像前端构建问题，实际是构建方式不对。
+
+2. **家目录脱敏漏了 `/root/`**。这是**人工核对真实诊断包**时发现的：
+   自动化测试断言的是我想到的模式（`/home/`、`/Users/`），
+   而开发机以 root 运行，真实日志里的路径是 `/root/.local/share/...`，
+   于是用户名 `root` 原样进了诊断包。
+   已补 `/root/` 并加了对应的回归测试。
+
+   **这正是 §14.3 冒烟清单里「脱敏必须人工核对一次」那一条的价值**：
+   测试通过不代表没问题，只代表测试想到的地方没问题。
+
+#### 设置页验收
+
+```text
+缓存管理
+  数据库总大小  159.7 KB
+  表 / 行数 / 保留策略
+    K 线            0   每个序列保留最近 5000 根
+    指标序列        0   每个序列保留最近 5000 点
+    仓位留痕        0   保留最近 90 天
+    历史仓位        0   不自动清理          ← retention=null 显示为「不自动清理」
+    ...
+  [刷新] [清理缓存]
+
+  点「清理缓存」→ 展开确认区（不是直接执行）：
+    确认清理缓存？
+    仓位留痕保留最近 90 天；K 线与指标每个序列保留最近 5000 点；
+    提示词生成记录保留最近 200 条。此操作不可撤销。
+    [确认清理] [取消]
+
+诊断导出
+  落盘路径  /root/.local/share/com.marketlens.app/diagnostics/diagnostic-*.json  [复制路径]
+  文件大小  2.3 KB
+  生成时间  2026-09-25 20:46
+  日志文件  .../logs/marketlens.2026-09-25.log
+
+  脱敏说明
+    诊断包已脱敏，由三道结构性防线保证：
+    • 不含密钥：凭据只给数量与权限属性，连打码后的 API Key 都没有。
+    • 不含账户与仓位明细：只统计行数，不导出任何业务数据行。
+    • 日志已逐行脱敏：长随机串 / 家目录路径 / 凭据赋值都会被替换。
+  本次脱敏明细：本次没有需要脱敏的内容。
+  凭据概览：共 0 条凭据 / 仅数量与权限属性，不含任何密钥信息。
+  日志尾部（已脱敏）[展开]
+  [复制诊断包 JSON]
+  版本信息：应用版本 0.1.0 / 核心版本 0.1.0 / Schema 版本 2 / 平台 linux
+```
+
+#### 人工核对真实诊断包（冒烟清单要求）
+
+导出后逐项看过落盘的 JSON：
+
+- ✅ 无金额、无持仓明细——`cache.tables` 只有行数，`credentials` 只有数量
+- ✅ 无 API Key 的任何片段（本机未配凭据，`count: 0`）
+- ✅ 设置走白名单，只有 `watchlist` 与 `onboarding_done`
+- ✅ `redactions: []` 与实际相符（本次日志里确实没有需要脱敏的内容）
+- ❌ **日志里的 `/root/...` 未被脱敏** → 已修（见上）
+
+#### CI 修复（首次运行就会红的两处）
+
+1. **Android 缺 NDK**：`android-actions/setup-android` 只装 SDK，
+   而 Tauri 编译 Rust 到 Android 需要 NDK 的 clang 与 sysroot。
+   已补安装步骤 + `NDK_HOME`（必须指向版本子目录）。
+2. **Linux 依赖缺两项**：官方列表里还有 `libxdo-dev` 与 `libssl-dev`。
+
+#### 未验证 / 已知不足
+
+- **签名流程未经端到端验证**：本机没有 Android SDK，无法生成 Android 工程，
+  也就无法确认补丁后的 Gradle 能编译通过。已验证的只有补丁脚本的逻辑
+  （`--self-test` 通过）与「锚点缺失时明确报错」。
+  **首次跑通 CI 的 android job 才算真正验证。**
+- **Windows / Android 产物均未实际构建过**：本机无 Windows target、无打包工具、
+  无 Android SDK/NDK（§14.2 已逐项核实）。验收边界见 §14.1。
+- **未做代码签名（Windows）**：NSIS/MSI 能构建但未签名，用户安装时会看到
+  SmartScreen 警告。签名需要证书，属于发布决策而非代码问题。
+- **`live_snapshot` / `account_snapshot` 表始终是 0 行**：界面缓存走的是内存
+  （`fetch::cache::LiveCache`），这两张表定义了但没被写入。不影响功能，
+  但要么用起来要么删掉——留着会让人以为有持久化缓存。
+
+**关键路径**：无。M0–M6 全部完成。
 
 ---
 

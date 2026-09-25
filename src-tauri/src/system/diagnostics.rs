@@ -255,10 +255,15 @@ fn find_long_tokens(text: &str) -> Vec<(usize, usize)> {
 /// 找家目录绝对路径。
 ///
 /// 路径本身不敏感，但 `/home/alice/...` 或 `/Users/bob/...` 会暴露用户名——
-/// 而用户名是社工攻击的起点。替换成 `~` 既保住可读性，又去掉了身份信息。
+/// 而用户名是社工攻击的起点。
+///
+/// **`/root/` 也必须覆盖**：这个缺口是人工核对真实诊断包时发现的——
+/// 自动化测试只断言了我想到的模式，而真实运行在开发机上跑出的是
+/// `/root/.local/share/...`，于是「root」这个用户名就原样进了诊断包。
+/// 这正是冒烟清单要求「人工看一遍」的理由。
 fn find_home_paths(text: &str) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
-    for prefix in ["/home/", "/Users/"] {
+    for prefix in ["/home/", "/Users/", "/root/"] {
         let mut search_from = 0;
         while let Some(found) = text[search_from..].find(prefix) {
             let start = search_from + found;
@@ -377,6 +382,17 @@ mod tests {
         );
         assert!(redacted.contains("[已脱敏:家目录]"));
         assert!(redacted.contains("数据库就绪"));
+    }
+
+    /// 这个用例来自真实诊断包：开发机以 root 运行，路径是 `/root/...`。
+    #[test]
+    fn root_home_paths_are_masked_too() {
+        let redacted = redact("数据库就绪 dir=/root/.local/share/com.marketlens.app");
+        assert!(
+            !redacted.contains("/root/"),
+            "root 的家目录也必须遮掉：{redacted}"
+        );
+        assert!(redacted.contains("[已脱敏:家目录]"));
     }
 
     #[test]
