@@ -113,6 +113,19 @@ CI 会额外校验 **`src/lib/types.ts` 未漂移**——它是 ts-rs 从 Rust �
 
 ---
 
+## 发版
+
+```bash
+# 改 src-tauri/tauri.conf.json 与 package.json 的 version（必须一致，CI 会校验）
+git commit -am "chore: 版本 0.2.0"
+git tag v0.2.0 && git push origin main --tags
+```
+
+推 tag 后 CI 会：三个平台全部构建成功 → 校验版本号 → 创建 Release 并附上安装包。
+带后缀的 tag（`v0.1.0-beta.1`）自动发成预发布。
+
+详见 `docs/DESIGN.md` §14.4。
+
 ## 平台状态
 
 | 平台 | 状态 |

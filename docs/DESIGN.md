@@ -1478,6 +1478,9 @@ MARKETLENS_BIN=src-tauri/target/release/marketlens scripts/headless-smoke.sh /tm
 ---
 
 
+
+---
+
 ### 14.2 打包前置条件与签名（2026-09-25 核实）
 
 **本机的实际能力边界**（逐项核实过，不是推测）：
@@ -1614,6 +1617,50 @@ keytool -genkey -v -keystore ~/upload-keystore.jks \
   否则白屏或崩溃。
 - **release 构建的 WebView 版本与开发机不同**：只在 release 上出现的渲染问题确实存在，
   所以冒烟要用 release 产物。
+### 14.4 发布流程
+
+**推一个 tag 就发版**：
+
+```bash
+# 1. 改版本号（两处必须一致，CI 会校验）
+#    src-tauri/tauri.conf.json 的 version
+#    package.json 的 version
+# 2. 提交
+git commit -am "chore: 版本 0.1.0"
+# 3. 打 tag 并推送
+git tag v0.1.0
+git push origin main --tags
+```
+
+CI 会依次：三个平台全部构建成功 → 校验 tag 与版本号一致 → 清点产物 →
+创建 GitHub Release 并把安装包附上去。
+
+#### 为什么用 tag 而不是「每次推 main 都发」
+
+推 main 就发版会攒出几十个无意义的 Release，而用户真正想知道的是
+「**这一版能装的东西在哪**」。tag 是「这是一个版本」的显式声明，语义准确。
+
+#### 三个刻意的设计
+
+1. **`needs: [check, windows, android]`**——三个平台的产物都成功才发布。
+   半成品 Release 比没有 Release 更糟：用户下载了 Windows 包却发现没有 Android 包，
+   还得回来翻日志。
+2. **校验 tag 与版本号一致**。版本号有三个来源（`tauri.conf.json`、`Cargo.toml`、
+   `package.json`），前两者由 Rust 测试守住，CI 再守 tag。不校验的话，
+   Release 名字会撒谎：标着 `v0.2.0`，装出来的却是 `0.1.0`。
+3. **预发布自动识别**：tag 带后缀（`v0.1.0-beta.1`）时发成 prerelease，
+   不占「最新版本」的位置。
+
+#### Release 说明里必须写清楚的三件事
+
+发布说明里会明确列出：
+
+- Android 产物**是否已签名**（未签名则给出配置 secret 的指引）
+- Windows 产物**未做代码签名**，安装时会有 SmartScreen 警告
+- Windows 与 Android 产物**未经真机验证**
+
+这三条都是「用户下载后会立刻遇到的问题」。不写的话，用户会以为是应用坏了，
+而不是「这是未签名的开发版本」。
 
 ---
 
