@@ -1699,11 +1699,66 @@ CI 会依次：三个平台全部构建成功 → 校验 tag 与版本号一致 
 非 tag 构建仍然传 artifact（便于调试），但配额耗尽不会让一次成功的构建变红
 （`continue-on-error: true`）。
 
+##### 草稿的创建收敛在单独的 `draft` job
+
+**先说结论：`gh release create` 在 release 已存在时不会报错，也不再复用，
+而是再建一条同名记录**（实测确认，且返回 exit 0）。所以「没有就建」这种写法
+在并行 job 里是错的。
+
+原先 windows 与 android 各自写了：
+
+```bash
+# 注释写着「并发安全」，但事实相反
+gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft ...
+```
+
+两个 job 同时走到这一步就会各建一条。后果不是干脆的报错，而是隐蔽的错乱：
+
+- `gh release view <tag>` 在多条同名记录里只返回其中一条；
+- `gh release upload <tag>` 未必传到同一条。
+
+于是资产被拆散到不同记录上，`release` job 校验时看到「资产不全」而拒绝发布，
+或者发布出一个空壳 Release。
+
+还有一条约束排除了「按 id 精准操作」这条退路：**`gh release view/edit/upload`
+只接受 tag，不接受 release id**（用 id 报 `release not found`，实测确认）。
+所以只能把「该 tag 下恰好一条」这个不变量先立住。
+
+修法是把创建动作收敛到单一的 `draft` job，windows / android 都 `needs: [draft]`：
+
+```yaml
+draft:
+  if: startsWith(github.ref, 'refs/tags/v')
+  permissions: { contents: write }
+  steps:
+    - run: bash scripts/ensure_draft_release.sh
+```
+
+⚠️ **`needs` 有个必须知道的语义**：needs 的 job 被跳过 → 本 job **也会被跳过**。
+所以 windows / android 必须显式写条件，否则非 tag 的 main 推送下 `draft` 被跳过，
+两个打包 job 会跟着被跳过、main 构建直接废掉：
+
+```yaml
+needs: [draft]
+if: always() && (needs.draft.result == 'success' || needs.draft.result == 'skipped')
+```
+
+这个条件同时覆盖三种情形：非 tag（draft skipped → 放行）、tag 且草稿就绪
+（放行）、tag 但草稿检查失败（跳过，不白花 20 分钟构建一个注定传不上去的包）。
+
+`scripts/ensure_draft_release.sh` 负责「有且仅有一条」：不存在则创建，
+多于一条则明确报错拒绝继续（例如上次失败的运行留下了残留）。
+它还有一处针对 API 行为的处理：**列表接口在 create 之后可能短暂看不到新记录**
+（实测返回过 0），所以「存在性」用即时的 `gh release view` 判断，
+只有「重复计数」才带重试。
+
 #### 三个刻意的设计
 
-1. **`needs: [check, windows, android]`**——三个平台的产物都成功才发布。
+1. **`needs: [draft, check, windows, android]`**——三个平台的产物都成功才发布。
    半成品 Release 比没有 Release 更糟：用户下载了 Windows 包却发现没有 Android 包，
-   还得回来翻日志。
+   还得回来翻日志。这里用 `always() &&` 显式列每个 needs 的结果，
+   而不是只写 `startsWith(...)`——因为 `draft` 也有 tag 条件，不这么做的话
+   它一旦被跳过就会连带跳过 `release`，连「校验失败该报错」的机会都没有。
 2. **校验 tag 与版本号一致**。版本号有三个来源（`tauri.conf.json`、`Cargo.toml`、
    `package.json`），前两者由 Rust 测试守住，CI 再守 tag。不校验的话，
    Release 名字会撒谎：标着 `v0.2.0`，装出来的却是 `0.1.0`。
@@ -1720,6 +1775,27 @@ CI 会依次：三个平台全部构建成功 → 校验 tag 与版本号一致 
 
 这三条都是「用户下载后会立刻遇到的问题」。不写的话，用户会以为是应用坏了，
 而不是「这是未签名的开发版本」。
+
+##### 「本次提交」列表：上一个 tag 的两个坑
+
+发布说明里的提交列表靠 `PREV..当前 tag` 这个区间生成。挑 `PREV` 时有两个
+实际踩到的坑，都已修：
+
+1. **必须过滤成版本 tag**（`git tag -l 'v*'`）。`--sort=-v:refname` 会把
+   **所有** tag 排进来，临时 tag（如演练用的 `zzz-*`）在版本序里可能排在前面，
+   于是 `PREV` 指向与发版无关的 tag。实测：`PREV` 选到了 `zzz-not-a-version`。
+2. **必须限定为当前 tag 的祖先**（`--merged "$GITHUB_REF_NAME"`）。
+   否则重跑一个较旧的 tag 时，`PREV` 会选到比它**更新**的 tag，
+   `PREV..当前` 成了反向区间，提交列表变成 0 条（实测踩到）。
+
+```bash
+PREV=$(git tag -l 'v*' --merged "$GITHUB_REF_NAME" --sort=-v:refname \
+         | grep -v "^${GITHUB_REF_NAME}$" | head -1 || true)
+```
+
+再补一道 `git rev-parse --verify --quiet "$PREV^{commit}"` 兜底：
+`git tag` 列的是**本地** tag，若该 tag 未 fetch 到就无法解析，此时回退到
+「最近 20 条」而不是让 `git log` 报错终止。
 
 ---
 
