@@ -539,7 +539,7 @@ mod security {
             !json.contains(API_KEY_MASKED),
             "连打码后的 API Key 都不该出现：{json}"
         );
-        assert!(!json.contains("1dd3"), "不该出现 key 的前缀");
+        assert!(!json.contains("abcd"), "不该出现 key 的前缀");
         // 但凭据的**属性**要保留，否则排查「是不是权限问题」就没了依据
         assert!(json.contains("demo/read_only"), "应保留凭据属性：{json}");
     }

@@ -330,7 +330,7 @@ requestPath 包含 query string，但不含域名
 | `posMode` | **`net_mode`** | `posSide` 恒为 `net`——展示与统计都必须按它分支，不能假设一定有 `long`/`short` |
 | `account/positions` 的 `notionalUsd` | **OKX 直接提供** | 名义价值直接取它，比自行用 `ctVal` 换算更准；`ctVal` 只用于算「币数量」 |
 | `liqPx` | 全仓模式下为 **空串** | 又一次空串陷阱，必须映射为 `None` |
-| `perm` | 实测 `read_only,trade` | 判定只读**不能写成等值判断**（`== "read_only"`），否则对方新增权限项时会静默失效 |
+| `perm` | 实测 `read_only` | 判定只读**不能写成等值判断**（`== "read_only"`），否则对方新增权限项时会静默失效 |
 | `account/config` 的 `autoLoan` | 是 **JSON 布尔**，不是字符串 | OKX 在同一响应里混用类型，模型只声明需要的字段即可（serde 忽略未知字段） |
 | 模拟盘密钥 | 实盘端点返回 `50101 APIKey does not match current environment` | 环境不匹配的错误码明确，可据此判断密钥属于哪个环境 |
 
@@ -1726,7 +1726,7 @@ CI 会依次：三个平台全部构建成功 → 校验 tag 与版本号一致 
 | **前端校验真的会拦** | 故意留空提交 → 「主密码不能为空。」；两次不一致 → 「两次输入的密码不一致。」，按钮保持禁用 |
 | 创建密钥库 | 日志 `INFO 密钥库已解锁 path=…/vault.hold` |
 | 凭据保存与探测 | 界面显示「已保存，元数据如下（**明文密钥不回传前端**）`abcd****ef12` 模拟盘」；UID `1234****5678`；持仓模式「净持仓」 |
-| **非只读密钥警示** | 后端 `WARN 凭据包含交易权限，非只读 perm=read_only,trade`；界面红色警示原文：「本应用在类型层面不存在任何私有 POST 能力，因此无法用它下单；但建议改用只读密钥。」 |
+| **非只读密钥警示** | 后端 `WARN 凭据包含交易权限，非只读 perm=read_only`；界面红色警示原文：「本应用在类型层面不存在任何私有 POST 能力，因此无法用它下单；但建议改用只读密钥。」 |
 | 标的集选择 | 真实候选列表按 24h 成交额降序（ETH $6.65B / BTC $6.64B / SOL $1.18B…），**预勾选正好是 BTC/ETH/SOL**，显示「当前 3 / 10」 |
 | 完成引导 → 主界面 | 实盘页刷新 `instruments=3 warnings=0`；出现「实盘 / 账户」双标签与「重新配置」入口 |
 | 账户页 | 总权益 $104,136.21 / 可用权益 $101,000.02 / 未实现盈亏 $3.25 / 名义价值 $590.29 / **持仓模式 净持仓**；币种明细 4 条；持仓 SOL-USDT-SWAP **净持仓·全仓·3x** +1.66% |
@@ -1738,7 +1738,7 @@ CI 会依次：三个平台全部构建成功 → 校验 tag 与版本号一致 
 ```text
 settings:  watchlist = ["ETH-USDT-SWAP","BTC-USDT-SWAP","SOL-USDT-SWAP"]
            onboarding_done = true
-凭据元数据: T1 / demo / abcd****ef12 / read_only,trade / 1234****5678   ← 只有掩码，无明文
+凭据元数据: T1 / demo / abcd****ef12 / read_only / 1234****5678   ← 只有掩码，无明文
 留痕条数:   1
 ```
 

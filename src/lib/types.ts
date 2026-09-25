@@ -121,7 +121,7 @@ env: string,
  */
 api_key_masked: string, 
 /**
- * OKX 返回的权限串，如 `read_only,trade`
+ * OKX 返回的权限串，如 `read_only`
  */
 permissions: string | null, uid_masked: string | null, last_ok_at: number | null, last_error: string | null, created_at: number, };
 

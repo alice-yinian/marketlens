@@ -99,7 +99,7 @@ mod tests {
     fn mask_keeps_only_head_and_tail() {
         assert_eq!(
             mask_secret("00000000-1111-2222-3333-444444444444"),
-            "abcd****ef12"
+            "0000****4444"
         );
     }
 
@@ -129,7 +129,7 @@ mod tests {
             "api key 中段不该出现在日志里：{rendered}"
         );
         assert!(
-            rendered.contains("abcd****ef12"),
+            rendered.contains("0000****4444"),
             "掩码应当出现：{rendered}"
         );
         assert!(rendered.contains("<redacted>"));

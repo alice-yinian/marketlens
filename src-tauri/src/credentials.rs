@@ -24,7 +24,7 @@ pub struct CredentialMeta {
     pub env: String,
     /// 形如 `abcd****ef12`。**明文永不入库。**
     pub api_key_masked: String,
-    /// OKX 返回的权限串，如 `read_only,trade`
+    /// OKX 返回的权限串，如 `read_only`
     pub permissions: Option<String>,
     pub uid_masked: Option<String>,
     #[ts(type = "number | null")]
