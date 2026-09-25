@@ -33,6 +33,12 @@ use tauri::Manager;
 /// 静默降级只会让用户看到一连串莫名其妙的报错。
 ///
 /// **密钥库刻意不在这里解锁**：解锁需要用户输入主密码，是启动后由前端触发的动作。
+///
+/// `mobile_entry_point` 是 Android/iOS 的必需入口：它生成 JNI 侧的 `start_app`
+/// 等符号。缺了它，`tauri android build` 会在「校验动态库」这一步失败
+/// （`does not include required runtime symbols`），且报错信息不会指明是缺这个宏。
+/// 桌面端不受影响，所以用 `cfg_attr` 只在移动端展开。
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {

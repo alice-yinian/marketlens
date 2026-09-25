@@ -18,6 +18,13 @@ jobs:
   check:
     name: 检查（格式 / Clippy / 测试 / 类型契约）
     runs-on: ubuntu-22.04
+    # `rustsec/audit-check` 要把审计结果发成一个 check run，需要 `checks: write`。
+    # 不给的话它会在「No vulnerabilities were found」之后单独抛
+    # `Resource not accessible by integration` —— 审计明明通过、整步却是红的，
+    # 非常容易误判成「发现了漏洞」。
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v4
 
@@ -100,6 +107,48 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # libsodium 在 Windows 上**必然**要下载预编译包：源码编译走不通
+      # （`configure`/`make` 在 Windows runner 上不可用），build.rs 会回退到
+      # `libsodium-1.0.22-stable-msvc.zip`。而这次下载在 build.rs 里
+      # **只有一次机会、没有任何重试**——一次 DNS 抖动就让整条 job 变红。
+      # 同一提交的两次运行一次成功一次失败（`Os { code: 11002 }` 主机名解析失败）
+      # 就是这个原因，不是代码问题。
+      #
+      # 这里先用 curl 把归档取到本地（带显式重试），再用 `SODIUM_DIST_DIR`
+      # 让 libsodium-sys-stable 直接从本地读：既拿到重试，又让构建**不再依赖
+      # 构建期网络**。四个文件都要——`LATEST.tar.gz` 是它第一步 verify 用的，
+      # 预编译 zip 才是最终链接的那份。
+      - name: 预取 libsodium 归档（消除构建期下载）
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIST_DIR="$(cygpath -u "$RUNNER_TEMP")/libsodium-dist"
+          mkdir -p "$DIST_DIR"
+          base="https://download.libsodium.org/libsodium/releases"
+
+          fetch() {
+            local name="$1"
+            local out="$DIST_DIR/$name"
+            for attempt in 1 2 3 4 5; do
+              if curl -fsSL --connect-timeout 30 --max-time 300 -o "$out" "$base/$name"; then
+                echo "已获取 $name（$(stat -c%s "$out") 字节）"
+                return 0
+              fi
+              echo "::warning::下载 $name 第 $attempt 次失败，重试……"
+              sleep 5
+            done
+            echo "::error::重试 5 次后仍无法下载 $name"
+            return 1
+          }
+
+          for name in LATEST.tar.gz LATEST.tar.gz.minisig \
+                      libsodium-1.0.22-stable-msvc.zip \
+                      libsodium-1.0.22-stable-msvc.zip.minisig; do
+            fetch "$name"
+          done
+
+          echo "SODIUM_DIST_DIR=$(cygpath -w "$DIST_DIR")" >> "$GITHUB_ENV"
 
       # 设计文档 §14：Windows 产物为 NSIS(.exe) 与 MSI
       - name: 构建安装包

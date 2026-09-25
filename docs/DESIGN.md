@@ -650,8 +650,17 @@ pub trait Vault {
   第一步必然失败，于是 `create_client` 会**新建一个空 client 顶掉快照里的那个**——
   表现为「凭据保存成功，重启后凭空消失」。这个 bug 由真实文件系统的往返测试抓到，
   纯内存实现根本测不出来（这也是为什么测试刻意用真实临时目录而不是 mock）。
-- ⚠️ 构建依赖：Stronghold 经由 `libsodium-sys-stable` **从源码编译 libsodium**，
-  因此交叉编译到 Windows/Android 时各自都需要可用的 C 工具链（CI 里已具备）。
+- ⚠️ 构建依赖：Stronghold 经由 `libsodium-sys-stable` 引入 libsodium。它在
+  **Linux/macOS** 上从源码编译（需要可用的 C 工具链），但在 **Windows** 上
+  源码编译走不通（`configure`/`make` 不可用），`build.rs` 必然回退到下载预编译包
+  `libsodium-1.0.22-stable-msvc.zip`（约 26 MB）。
+
+  ⚠️ **这个回退下载在 `build.rs` 里没有重试**：一次 DNS 抖动就让整条 job 变红。
+  首次 CI 就撞上了这个——同一提交的两次运行，windows job 一次成功、一次
+  死于 `Os { code: 11002 }`（主机名解析失败）。因此 windows job 里加了
+  「预取 libsodium 归档」步骤（`curl` 显式重试 5 次）并用 `SODIUM_DIST_DIR`
+  指向本地目录，使构建**不再依赖构建期网络**。
+  `LATEST.tar.gz` 与预编译 zip 两组文件都要预取——前者是它校验的第一步。
 
 > **未实现**：设计文档原计划的「15 分钟无操作自动锁定」。它需要前端定时器与活动检测，
 > 属于后续补充；当前锁定是显式动作（界面提供锁定按钮）。此处如实标注，不假装已有。
@@ -1420,6 +1429,16 @@ jobs:
 
 - 版本号单一来源：`tauri.conf.json` 的 `version`，构建脚本同步到 `Cargo.toml` 与前端。
 - Android keystore 与密码存 CI secrets，**绝不进仓库**。
+- **`rustsec/audit-check` 需要 `checks: write`**。它把审计结果发成一个 check run；
+  权限不足时会在 `No vulnerabilities were found` **之后**单独抛
+  `##[error]Resource not accessible by integration`，整步变红但审计其实是通过的——
+  非常容易误判成「发现了漏洞」。check job 的 `permissions` 必须显式给 `checks: write`
+  （仓库默认的 `GITHUB_TOKEN` 权限是只读）。
+  注：从 fork 的 PR 触发时 GitHub 禁止 Check API，该 action 会降级为「把报告打到日志」，
+  这是上游已知限制，不影响 push / 自家 PR。
+- `npm audit --audit-level=high` 走**官方源**才能拿到漏洞库；本机 `~/.npmrc` 配的镜像
+  （npmmirror）没有实现 audit 端点，会报 `NOT_IMPLEMENTED`。CI 上用的就是官方源，
+  故不受影响；本地手测需显式 `--registry=https://registry.npmjs.org`。
 - 产物：`MarketLens_x.y.z_x64-setup.exe`（Windows 安装包）、`MarketLens_x.y.z_arm64-v8a.apk`（自用分发）、`MarketLens_x.y.z.aab`（备用，未上架前仅归档）。
 - 包名 `com.marketlens.app` 必须与 `tauri.conf.json` 的 `identifier`、Android 工程保持一致。**首次发布后不可更改**——改动会让系统视为全新应用，导致无法覆盖升级。
 
@@ -1517,6 +1536,21 @@ Command-line Tools**。两个最容易漏的点：
    没有它整步直接失败。CI 里已补上，并把 `NDK_HOME` 写进 `$GITHUB_ENV`。
 2. **`NDK_HOME` 必须指向版本子目录**（`$ANDROID_HOME/ndk/<version>`），
    指向 `$ANDROID_HOME/ndk` 本身不行。
+3. **`run()` 必须标 `#[cfg_attr(mobile, tauri::mobile_entry_point)]`**。
+   这个宏生成 JNI 侧的 `start_app` 等入口符号；缺了它 `tauri android build`
+   会在「校验动态库」这一步失败：
+
+   ```
+   failed to validate library: Library from .../libmarketlens_lib.so does not
+   include required runtime symbols. This means you are likely missing the
+   tauri::mobile_entry_point macro usage
+   ```
+
+   报错文字本身给了线索，但**症状离原因很远**——它看起来像 `.so` 链接问题，
+   实际只是少了一行属性宏。桌面端不需要这个宏（`cfg_attr` 保证只在移动端展开），
+   所以本地 `cargo check` 完全不会暴露它，只有真去 `tauri android build` 才炸。
+
+   已验证：同一个最小 crate，**加宏后 `.a` 里有 `__start_app` 符号，去掉则为 0 个**。
 
 Rust target：`aarch64-linux-android`、`armv7-linux-androideabi`、
 `i686-linux-android`、`x86_64-linux-android`。
