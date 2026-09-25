@@ -117,7 +117,7 @@ function MainShell({
       <div className="flex-1">
         {panel("live", <LivePage />)}
         {panel("account", <AccountPage onConfigure={onConfigure} />)}
-        {panel("review", <ReviewPage />)}
+        {panel("review", <ReviewPage onConfigure={onConfigure} />)}
       </div>
     </div>
   );

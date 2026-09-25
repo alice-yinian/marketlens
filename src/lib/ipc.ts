@@ -19,6 +19,7 @@ import type {
   FetchPlan,
   LiveSnapshot,
   Progress,
+  ReviewContext,
   VaultStatus,
   WatchlistCandidate,
 } from "./types";
@@ -50,6 +51,19 @@ export interface ReviewPlanRequest {
   to: number;
   bar?: string | null;
   inst_ids?: string[] | null;
+}
+
+/**
+ * `review_context` 的入参（对应 Rust 的 `ContextRequest`）。
+ *
+ * 与 `ReviewPlanRequest` 不同，它**多一个 `credential_id`**：装配会同步官方
+ * 历史仓位（联网），必须知道用哪条凭据；`bar` 缺省 `1H`。
+ */
+export interface ReviewContextRequest {
+  credential_id: string;
+  from: number;
+  to: number;
+  bar?: string | null;
 }
 
 /** 命令名 → { 入参, 出参 } 的单一事实来源 */
@@ -94,6 +108,14 @@ export interface Commands {
   review_fetch: { args: { plan_id: string }; result: ExecutionReport };
   /** 取消正在执行的计划；`false` 表示它已经结束了 */
   review_cancel: { args: { plan_id: string }; result: boolean };
+
+  /**
+   * 装配复盘上下文：同步官方历史仓位 → 双源合并 → 开仓时刻归因 → 统计。
+   *
+   * **会联网**且可能耗时数秒；时段上限同为 90 天（超限 `RangeTooLarge`，不可重试）。
+   * 与采集刻意分开：改了统计口径只需重新装配，不必重新拉数据。
+   */
+  review_context: { args: { request: ReviewContextRequest }; result: ReviewContext };
 }
 
 /**

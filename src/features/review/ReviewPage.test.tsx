@@ -10,7 +10,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ExecutionReport, FetchPlan, Progress } from "../../lib/types";
+import type { CredentialMeta, ExecutionReport, FetchPlan, Progress, ReviewContext } from "../../lib/types";
 
 const callMock = vi.fn();
 const onFetchProgressMock = vi.fn();
@@ -87,6 +87,108 @@ function reportOf(overrides: Partial<ExecutionReport> = {}): ExecutionReport {
     done_requests: 11,
     elapsed_ms: 12_500,
     cancelled: false,
+    ...overrides,
+  };
+}
+
+function credentialOf(overrides: Partial<CredentialMeta> = {}): CredentialMeta {
+  return {
+    id: "cred-1",
+    label: "主账户只读",
+    env: "live",
+    api_key_masked: "abcd****ef12",
+    permissions: "read_only",
+    uid_masked: "1234****",
+    last_ok_at: null,
+    last_error: null,
+    created_at: 1_700_000_000_000,
+    ...overrides,
+  };
+}
+
+function contextOf(overrides: Partial<ReviewContext> = {}): ReviewContext {
+  return {
+    from: 1_700_000_000_000,
+    to: 1_700_086_400_000,
+    bar: "1H",
+    positions: [
+      {
+        pos_id: "p1",
+        inst_id: "BTC-USDT-SWAP",
+        direction: "long",
+        mgn_mode: "cross",
+        lever: 5,
+        open_avg_px: 60_000,
+        close_avg_px: 61_000,
+        max_contracts: 1,
+        pnl: 100,
+        pnl_ratio: 0.01,
+        realized_pnl: 12.5,
+        fee: -1.2,
+        funding_fee: -0.3,
+        open_time: 1_700_000_000_000,
+        close_time: 1_700_003_600_000,
+        source: "merged",
+        time_precision: "approximate",
+        regime: null,
+        max_favorable: 30,
+        max_adverse: -4,
+      },
+    ],
+    stats: {
+      total: 1,
+      win_rate: 1,
+      profit_factor: null,
+      expectancy: 12.5,
+      total_realized_pnl: 12.5,
+      avg_hold_ms: 3_600_000,
+      fee_drag: 0.12,
+      by_trend: [
+        {
+          key: "未归因",
+          count: 1,
+          win_rate: 1,
+          total_pnl: 12.5,
+          profit_factor: null,
+          is_unattributed: true,
+        },
+      ],
+      by_direction: [
+        {
+          key: "多",
+          count: 1,
+          win_rate: 1,
+          total_pnl: 12.5,
+          profit_factor: null,
+          is_unattributed: false,
+        },
+      ],
+      by_instrument: [
+        {
+          key: "BTC-USDT-SWAP",
+          count: 1,
+          win_rate: 1,
+          total_pnl: 12.5,
+          profit_factor: null,
+          is_unattributed: false,
+        },
+      ],
+      unattributed: 1,
+    },
+    merge: {
+      from_official: 1,
+      from_local: 0,
+      enriched: 0,
+      coverage_note: "本地无留痕记录：无法提供持仓期间的最大浮盈/浮亏。",
+    },
+    trace: {
+      records: 0,
+      has_gaps: false,
+      max_gap_ms: 0,
+      last_trace_at: null,
+      note: "最近 30 天没有本地留痕。",
+    },
+    warnings: ["官方历史仓位在到达起始时间前已耗尽，该时段可能不完整"],
     ...overrides,
   };
 }
@@ -369,5 +471,87 @@ describe("ReviewPage", () => {
     });
     await flush();
     expect(host.textContent).toContain(S.review.report.cancelled);
+  });
+
+  it("装配复盘：用选中的凭据调用 review_context 并展示结果", async () => {
+    callMock.mockImplementation((cmd: string) => {
+      if (cmd === "credentials_list") return Promise.resolve([credentialOf()]);
+      if (cmd === "review_context") return Promise.resolve(contextOf());
+      return Promise.reject(new Error("unexpected"));
+    });
+
+    const host = await renderPage();
+    expect(hasButton(host, S.review.assemble.run)).toBe(true);
+
+    await click(button(host, S.review.assemble.run));
+
+    expect(callMock).toHaveBeenCalledWith("review_context", {
+      request: {
+        credential_id: "cred-1",
+        from: expect.any(Number),
+        to: expect.any(Number),
+        bar: "1H",
+      },
+    });
+    // 结果区：来源/精度角标、未归因分组、可信度说明与 warnings 都要出现
+    expect(host.textContent).toContain(S.review.result.title);
+    expect(host.textContent).toContain(S.review.result.source.merged);
+    expect(host.textContent).toContain(S.review.result.precision.approximate);
+    expect(host.textContent).toContain(S.review.result.regimeUnavailable);
+    expect(host.textContent).toContain(S.review.result.profitFactorNoLosses);
+    expect(host.textContent).toContain(S.review.result.trustTitle);
+    expect(host.textContent).toContain("本地无留痕记录：无法提供持仓期间的最大浮盈/浮亏。");
+    expect(host.textContent).toContain(
+      "官方历史仓位在到达起始时间前已耗尽，该时段可能不完整",
+    );
+  });
+
+  it("装配失败（RangeTooLarge）展示友好提示，而不是原始错误码", async () => {
+    callMock.mockImplementation((cmd: string) => {
+      if (cmd === "credentials_list") return Promise.resolve([credentialOf()]);
+      if (cmd === "review_context") {
+        return Promise.reject({
+          code: "RangeTooLarge",
+          message: "时段超出上限：最多 90 天",
+          retryable: false,
+        });
+      }
+      return Promise.reject(new Error("unexpected"));
+    });
+
+    const host = await renderPage();
+    await click(button(host, S.review.assemble.run));
+
+    expect(host.textContent).toContain(S.review.errors.rangeTooLargeTitle);
+    expect(host.textContent).toContain(S.review.errors.assembleRangeTooLarge);
+    expect(host.textContent).not.toContain("RangeTooLarge");
+  });
+
+  it("没有凭据时装配区提示先添加凭据，且装配按钮不可用", async () => {
+    callMock.mockImplementation((cmd: string) => {
+      if (cmd === "credentials_list") return Promise.resolve([]);
+      return Promise.reject(new Error("unexpected"));
+    });
+
+    const host = await renderPage();
+    expect(host.textContent).toContain(S.review.assemble.needCredential);
+    expect(host.textContent).toContain(S.review.assemble.needCredentialHint);
+    expect(button(host, S.review.assemble.run).disabled).toBe(true);
+  });
+
+  it("凭据列表读取失败不阻塞采集流程，只在装配区如实说明", async () => {
+    callMock.mockImplementation((cmd: string) => {
+      if (cmd === "credentials_list") {
+        return Promise.reject({ code: "VaultLocked", message: "密钥库未解锁", retryable: true });
+      }
+      if (cmd === "review_plan") return Promise.resolve(planOf());
+      return Promise.reject(new Error("unexpected"));
+    });
+
+    const host = await renderPage();
+    expect(host.textContent).toContain(S.review.assemble.credentialError);
+    // 采集流程仍然可用
+    await click(button(host, S.review.plan.generate));
+    expect(hasButton(host, S.review.plan.start)).toBe(true);
   });
 });

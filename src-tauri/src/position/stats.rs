@@ -10,6 +10,11 @@ use ts_rs::TS;
 
 use crate::position::history::ClosedPosition;
 
+/// 「数据缺失」分组的键名。
+///
+/// 界面**不应**靠匹配这个字面量来判断——用 `StatGroup::is_unattributed`。
+pub const UNATTRIBUTED_KEY: &str = "未归因";
+
 /// 分组统计。
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export_to = "types.ts")]
@@ -20,6 +25,11 @@ pub struct StatGroup {
     pub win_rate: f64,
     pub total_pnl: f64,
     pub profit_factor: Option<f64>,
+    /// 该分组是否由「数据缺失」产生。
+    ///
+    /// 显式字段而不是让界面去匹配 key 的字面量「未归因」——那种耦合一旦
+    /// 后端改了文案就会静默失效（不报错，但「这是数据缺失」的标注会消失）。
+    pub is_unattributed: bool,
 }
 
 /// 整体统计。
@@ -151,7 +161,7 @@ fn group_by(
     let mut buckets: BTreeMap<String, Vec<&ClosedPosition>> = BTreeMap::new();
 
     for position in positions {
-        let key = key_of(position).unwrap_or_else(|| "未归因".to_string());
+        let key = key_of(position).unwrap_or_else(|| UNATTRIBUTED_KEY.to_string());
         buckets.entry(key).or_default().push(position);
     }
 
@@ -182,6 +192,7 @@ fn group_by(
             };
 
             StatGroup {
+                is_unattributed: key == UNATTRIBUTED_KEY,
                 key,
                 count,
                 win_rate: if count == 0 {
@@ -350,10 +361,14 @@ mod tests {
         let unattributed = stats
             .by_trend
             .iter()
-            .find(|g| g.key == "未归因")
+            .find(|g| g.is_unattributed)
             .expect("未归因样本必须单独成组，不能悄悄并入其它分组");
         assert_eq!(unattributed.count, 1);
         assert_eq!(stats.unattributed, 1);
+        assert!(
+            stats.by_direction.iter().all(|g| !g.is_unattributed),
+            "有方向的分组不该被标成未归因"
+        );
     }
 
     #[test]

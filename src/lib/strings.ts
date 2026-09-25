@@ -342,6 +342,24 @@ export const S = {
       start: "开始采集",
     },
 
+    // 复盘装配（M4）：采集完成后把原始数据算成结论
+    assemble: {
+      title: "装配复盘",
+      subtitle: "合并官方历史仓位与本地留痕，补上开仓时刻的市场状态，再统计。",
+      note: "先采集能拿到更完整的归因数据；未采集也可以装配，缺失项会在下方「装配过程中的问题」里如实说明。",
+      rangeNote: "装配使用当前时段的起止时间与粒度。",
+      run: "装配复盘",
+      running: "装配中…",
+      runningHint: "会联网同步官方历史仓位并做归因与统计，可能耗时数秒。",
+      needCredential: "尚未添加 OKX 凭据，无法装配复盘。",
+      needCredentialHint: "装配需要读取官方历史仓位。请先在引导中添加只读凭据，再回到本页。",
+      addCredential: "去添加凭据",
+      credentialLoading: "正在读取凭据…",
+      credentialError: "凭据列表读取失败，暂时无法装配。",
+      retryCredentials: "重试",
+      noPositionsYet: "本次装配没有返回任何仓位。",
+    },
+
     // 进度
     progress: {
       title: "采集进行中",
@@ -383,6 +401,79 @@ export const S = {
       Skipped: "已跳过（上次已完成）",
     },
 
+    // 复盘结果展示（M4）
+    result: {
+      title: "复盘结果",
+      range: (text: string) => `时段：${text}`,
+      bar: (label: string) => `粒度：${label}`,
+      positionsCount: (n: number) => `共 ${n} 笔仓位`,
+      empty: "该时段没有已平仓位记录。",
+      emptyHint: "时段内可能没有交易，或官方历史与本地留痕都未覆盖到。",
+
+      // a) 统计概览
+      overviewTitle: "统计概览",
+      winRate: "胜率",
+      profitFactor: "盈亏比",
+      /** profit_factor 为 null 时按 stats 可区分的原因给出精确文案（绝不显示 0 或 ∞） */
+      profitFactorNoTrades: "无交易记录",
+      profitFactorNoWins: "无盈利笔",
+      profitFactorNoLosses: "无亏损笔",
+      profitFactorUnavailable: "无法计算",
+      expectancy: "期望值（每笔）",
+      totalPnl: "总盈亏",
+      avgHold: "平均持仓时长",
+      feeDrag: "费用侵蚀",
+      feeDragHint: "手续费 + 资金费 ÷ |已实现盈亏|：利润被交易成本吃掉的比例。",
+      feeDragUnavailable: "无法计算（无已实现盈亏）",
+      feeDragWarning: "交易成本吃掉了相当一部分利润，值得优先改进。",
+
+      // b) 按开仓时市场状态分组
+      trendTitle: "按开仓时市场状态",
+      trendHint: "同样的方向，在不同市场状态下的胜率可能完全不同——这是复盘的核心。",
+      groupUnattributed: "未归因",
+      groupUnattributedNote: "开仓时状态不可得，无法归类",
+      groupCount: (n: number) => `${n} 笔`,
+      colGroup: "分组",
+      colCount: "笔数",
+      colWinRate: "胜率",
+      colPnl: "合计盈亏",
+
+      // c) 逐笔仓位
+      positionsTitle: "逐笔仓位",
+      direction: { long: "多", short: "空", unknown: "未知" },
+      source: { okx: "官方", local: "本地", merged: "官方+本地", unknown: "来源未知" },
+      precision: { exact: "时间精确", approximate: "时间近似", unknown: "精度未知" },
+      lever: "杠杆",
+      openTime: "开仓时间",
+      closeTime: "平仓时间",
+      openPx: "开仓均价",
+      closePx: "平仓均价",
+      realizedPnl: "已实现盈亏",
+      fee: "手续费",
+      fundingFee: "资金费",
+      regimeTitle: "开仓时市场状态",
+      /** regime 为 null：明确写不可得，绝不留空 */
+      regimeUnavailable: "开仓时状态不可得",
+      change24h: "开仓前 24h 涨跌",
+      extremeTitle: "持仓极值",
+      maxFavorable: "最大浮盈",
+      maxAdverse: "最大浮亏",
+      extremeUnavailable: "需本地留痕",
+
+      // d) 数据可信度
+      trustTitle: "数据可信度",
+      mergeLabel: "双源合并",
+      mergeCounts: (official: number, local: number, enriched: number) =>
+        `官方 ${official} 笔 · 仅本地 ${local} 笔 · 被本地补充极值 ${enriched} 笔`,
+      traceLabel: "本地留痕覆盖度",
+      unattributedNote: (n: number) =>
+        `有 ${n} 笔拿不到开仓时的市场状态（多为官方历史窗口之外或缺少采集数据），已归入「未归因」。`,
+
+      // e) warnings
+      warningsTitle: "装配过程中的问题",
+      warningsHint: "以下问题不致命，但会影响复盘结论的完整性，请留意。",
+    },
+
     // 时长（预估与实测共用）
     duration: {
       underSecond: "不足 1 秒",
@@ -390,13 +481,24 @@ export const S = {
       minutes: (n: number) => `约 ${n} 分钟`,
     },
 
+    // 平均持仓时长（天/小时/分钟）
+    hold: {
+      daysHours: (d: number, h: number) => `${d} 天 ${h} 小时`,
+      days: (d: number) => `${d} 天`,
+      hoursMinutes: (h: number, m: number) => `${h} 小时 ${m} 分钟`,
+      hours: (h: number) => `${h} 小时`,
+    },
+
     // 错误态
     errors: {
       planTitle: "生成计划失败",
       fetchTitle: "采集失败",
+      assembleTitle: "装配复盘失败",
       rangeTooLargeTitle: "时段超出上限",
       rangeTooLarge:
         "时段最多 90 天。请缩小范围后重试——本工具不会静默截断时段。",
+      assembleRangeTooLarge:
+        "装配时段最多 90 天。请缩小范围后重试——本工具不会静默截断时段。",
       retry: "重试",
     },
   },
