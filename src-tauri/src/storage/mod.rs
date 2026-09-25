@@ -1,6 +1,6 @@
 mod db;
 
-pub use db::{Db, PromptTemplateRow};
+pub use db::{CacheTable, Db, PromptTemplateRow};
 
 /// `position_trace` 表的一行（读取用）。
 ///

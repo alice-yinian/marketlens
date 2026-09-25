@@ -1,3 +1,6 @@
+pub mod cache;
+pub mod diagnostics;
+
 use serde::Serialize;
 use ts_rs::TS;
 

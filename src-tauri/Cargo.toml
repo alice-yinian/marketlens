@@ -50,6 +50,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["clock", "s
 tauri-plugin-stronghold = "2.3.2"
 iota_stronghold = "2.1"
 minijinja = { version = "2.24.0", default-features = false, features = ["loader", "builtins", "serde"] }
+tracing-appender = "0.2.5"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

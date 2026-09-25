@@ -59,6 +59,64 @@ pub struct PromptTemplateRow {
     pub updated_at: i64,
 }
 
+/// 缓存管理涉及的时序表。
+///
+/// 用枚举而不是字符串：调用方只能引用这些常量，**不存在把任意字符串拼进 SQL
+/// 的可能**——`SELECT COUNT(*) FROM {name}` 这种写法一旦允许传入任意名字，
+/// 就等价于开了一个注入点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheTable {
+    Candles,
+    MetricSeries,
+    PositionTrace,
+    PositionHistory,
+    Fills,
+    LiveSnapshot,
+    AccountSnapshot,
+    PromptRuns,
+    FetchState,
+}
+
+impl CacheTable {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CacheTable::Candles => "candles",
+            CacheTable::MetricSeries => "metric_series",
+            CacheTable::PositionTrace => "position_trace",
+            CacheTable::PositionHistory => "position_history",
+            CacheTable::Fills => "fills",
+            CacheTable::LiveSnapshot => "live_snapshot",
+            CacheTable::AccountSnapshot => "account_snapshot",
+            CacheTable::PromptRuns => "prompt_runs",
+            CacheTable::FetchState => "fetch_state",
+        }
+    }
+
+    /// 表不存在时返回 0 行而不是报错。
+    ///
+    /// 迁移历史里可能有表被合并过；让「缓存管理」因为一张可选表不存在就整页打不开，
+    /// 不值得。
+    pub async fn count(self, db: &Db) -> AppResult<i64> {
+        // 每个分支都是**字面量**，不是拼接出来的字符串：注入面为零，
+        // 而且 sqlx 也因此能接受（它拒绝动态 SQL 字符串，这个拒绝是对的）。
+        let sql = match self {
+            CacheTable::Candles => "SELECT COUNT(*) FROM candles",
+            CacheTable::MetricSeries => "SELECT COUNT(*) FROM metric_series",
+            CacheTable::PositionTrace => "SELECT COUNT(*) FROM position_trace",
+            CacheTable::PositionHistory => "SELECT COUNT(*) FROM position_history",
+            CacheTable::Fills => "SELECT COUNT(*) FROM fills",
+            CacheTable::LiveSnapshot => "SELECT COUNT(*) FROM live_snapshot",
+            CacheTable::AccountSnapshot => "SELECT COUNT(*) FROM account_snapshot",
+            CacheTable::PromptRuns => "SELECT COUNT(*) FROM prompt_runs",
+            CacheTable::FetchState => "SELECT COUNT(*) FROM fetch_state",
+        };
+        Ok(sqlx::query_scalar(sql)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap_or(0))
+    }
+}
+
 /// 数据库句柄。
 ///
 /// 内部持有连接池，命令层只能调用语义化方法——前端永远拿不到「执行任意 SQL」
@@ -240,6 +298,94 @@ impl Db {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// 数据库文件大小（`page_count × page_size`）。
+    /// **仅测试用**：让测试能直接造数据，而不必为每个测试场景都加一个业务方法。
+    ///
+    /// 只在 `cfg(test)` 下存在，所以它不会被任何发布构建引用到——
+    /// 「命令层不能执行任意 SQL」这条边界（ADR #2）依然成立。
+    #[cfg(test)]
+    pub(crate) fn pool_for_test(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    pub async fn database_bytes(&self) -> AppResult<i64> {
+        let page_count: i64 = sqlx::query_scalar("PRAGMA page_count")
+            .fetch_one(&self.pool)
+            .await?;
+        let page_size: i64 = sqlx::query_scalar("PRAGMA page_size")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(page_count * page_size)
+    }
+
+    /// 删除早于 `before_ms` 的仓位留痕，返回删除行数。
+    pub async fn prune_position_traces(&self, before_ms: i64) -> AppResult<i64> {
+        let result = sqlx::query("DELETE FROM position_trace WHERE ts < ?1")
+            .bind(before_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() as i64)
+    }
+
+    /// 每个 `(inst_id, kind, bar)` 只保留最近 `keep` 根 K 线。
+    ///
+    /// 按序列分组，而不是「全局按时间删」——否则交易活跃的标的会把不活跃标的的
+    /// 数据一起挤掉，而那些正是复盘时最需要的（长期持仓往往在冷门标的上）。
+    pub async fn prune_candles(&self, keep: i64) -> AppResult<i64> {
+        let result = sqlx::query(
+            "DELETE FROM candles WHERE rowid IN (
+                SELECT rowid FROM (
+                    SELECT rowid, ROW_NUMBER() OVER (
+                        PARTITION BY inst_id, kind, bar ORDER BY ts DESC
+                    ) AS rn FROM candles
+                ) WHERE rn > ?1
+            )",
+        )
+        .bind(keep)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() as i64)
+    }
+
+    /// 每个 `(inst_id, metric)` 只保留最近 `keep` 个点。
+    pub async fn prune_metric_series(&self, keep: i64) -> AppResult<i64> {
+        let result = sqlx::query(
+            "DELETE FROM metric_series WHERE rowid IN (
+                SELECT rowid FROM (
+                    SELECT rowid, ROW_NUMBER() OVER (
+                        PARTITION BY inst_id, metric ORDER BY ts DESC
+                    ) AS rn FROM metric_series
+                ) WHERE rn > ?1
+            )",
+        )
+        .bind(keep)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() as i64)
+    }
+
+    /// 只保留最近 `keep` 条提示词生成记录。
+    pub async fn prune_prompt_runs(&self, keep: i64) -> AppResult<i64> {
+        let result = sqlx::query(
+            "DELETE FROM prompt_runs WHERE id NOT IN (
+                SELECT id FROM prompt_runs ORDER BY id DESC LIMIT ?1
+            )",
+        )
+        .bind(keep)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() as i64)
+    }
+
+    /// 重写数据库文件以回收空间。
+    ///
+    /// `VACUUM` 会重写整个库，所以**只在真的删了东西时调用**：
+    /// 每次刷新都跑会让一次普通操作卡住几秒。
+    pub async fn vacuum(&self) -> AppResult<()> {
+        sqlx::query("VACUUM").execute(&self.pool).await?;
+        Ok(())
     }
 
     pub async fn delete_credential_meta(&self, id: &str) -> AppResult<()> {

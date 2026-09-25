@@ -34,11 +34,13 @@ use tauri::Manager;
 ///
 /// **密钥库刻意不在这里解锁**：解锁需要用户输入主密码，是启动后由前端触发的动作。
 pub fn run() {
-    init_tracing();
-
     tauri::Builder::default()
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // 日志放在 setup 里初始化：写文件需要知道应用数据目录，而那个路径
+            // 只能从 AppHandle 拿。builder 构造阶段没有任何日志，所以不会漏掉什么。
+            init_tracing(&handle);
 
             let db = tauri::async_runtime::block_on(storage::Db::open(&handle))?;
             app.manage(db);
@@ -74,21 +76,89 @@ pub fn run() {
             commands::prompt::template_delete,
             commands::prompt::prompt_build_live,
             commands::prompt::prompt_build_review,
+            commands::system::cache_stats,
+            commands::system::cache_cleanup,
+            commands::system::diagnostics_export,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用启动失败");
 }
 
-fn init_tracing() {
+/// 初始化日志：**控制台 + 文件双写**。
+///
+/// 文件日志是必需的，不是锦上添花：Windows 与 Android 上用户拿不到 stdout，
+/// 没有日志文件就意味着「诊断导出」根本无物可导——而崩溃排查恰恰最需要它。
+///
+/// 日志目录拿不到时**只降级到控制台**，不让启动失败：宁可没有日志文件，
+/// 也不能因为写不了日志而让应用起不来。
+fn init_tracing(app: &tauri::AppHandle) {
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
 
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,marketlens_lib=debug"));
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
+    let console = tracing_subscriber::fmt::layer().with_target(false);
+    let file = log_file_layer(app);
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(console)
+        .with(file)
         .init();
+}
+
+/// 文件日志层。保留最近 7 天——足够覆盖「用户发现问题 → 来反馈」的间隔，
+/// 又不会让日志无限增长。
+fn log_file_layer<S>(
+    app: &tauri::AppHandle,
+) -> Option<Box<dyn tracing_subscriber::Layer<S> + Send + Sync>>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    use tauri::Manager;
+
+    let dir = match app.path().app_log_dir() {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("无法解析日志目录，日志只写控制台：{err}");
+            return None;
+        }
+    };
+
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        eprintln!("无法创建日志目录 {}，日志只写控制台：{err}", dir.display());
+        return None;
+    }
+
+    let appender = match tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("marketlens")
+        .filename_suffix("log")
+        .max_log_files(7)
+        .build(&dir)
+    {
+        Ok(appender) => appender,
+        Err(err) => {
+            eprintln!("无法创建日志文件，日志只写控制台：{err}");
+            return None;
+        }
+    };
+
+    let (writer, guard) = tracing_appender::non_blocking(appender);
+    // 故意泄漏 guard：它必须活到进程结束。提前 drop 会关掉后台写线程，
+    // 丢掉最后几条日志——而那往往正是崩溃现场。
+    std::mem::forget(guard);
+
+    // 装箱成 trait object：`with_writer` 返回的具体类型带一串泛型参数，
+    // 手写返回类型既脆弱又没必要。
+    Some(Box::new(
+        tracing_subscriber::fmt::layer()
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(writer),
+    ))
 }
 
 #[cfg(test)]
@@ -202,6 +272,15 @@ mod tests {
             crate::prompt::templates::PromptTemplate,
             crate::prompt::templates::TemplateKind,
             crate::commands::prompt::PromptOutput,
+            crate::commands::system::DiagnosticExport,
+            crate::system::cache::CacheStats,
+            crate::system::cache::CleanupReport,
+            crate::system::cache::DeletedRows,
+            crate::system::cache::TableStat,
+            crate::system::diagnostics::DiagnosticBundle,
+            crate::system::diagnostics::SettingEntry,
+            crate::system::diagnostics::CredentialSummary,
+            crate::system::diagnostics::RedactionNote,
             RegimeSnapshot,
             ReviewStats,
             StatGroup,
