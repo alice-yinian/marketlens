@@ -119,6 +119,7 @@ export const S = {
     account: "账户",
     review: "复盘",
     prompt: "提示词",
+    settings: "设置",
     configure: "重新配置",
   },
 
@@ -630,6 +631,93 @@ export const S = {
       listTitle: "模板列表读取失败",
       buildTitle: "生成提示词失败",
       retry: "重试",
+    },
+  },
+
+  // 设置页（M6）：缓存管理 + 诊断导出 + 版本信息
+  settings: {
+    title: "设置",
+    subtitle: "缓存管理 · 诊断导出 · 版本信息",
+
+    // 1) 缓存管理
+    cache: {
+      title: "缓存管理",
+      subtitle: "查看本地数据库占用，并按保留策略清理",
+      refresh: "刷新",
+      refreshing: "刷新中…",
+      loading: "正在读取缓存统计…",
+      errorTitle: "缓存统计读取失败",
+      databaseSize: "数据库总大小",
+      columns: { label: "表", rows: "行数", retention: "保留策略" },
+      /** retention 为 null 时的展示（不自动清理的表） */
+      noRetention: "不自动清理",
+
+      cleanup: "清理缓存",
+      cleaning: "清理中…",
+      /** 二次确认：必须逐条说清会删什么，且声明不可撤销 */
+      confirmTitle: "确认清理缓存？",
+      confirmBody:
+        "仓位留痕保留最近 90 天；K 线与指标每个序列保留最近 5000 点；提示词生成记录保留最近 200 条。此操作不可撤销。",
+      confirm: "确认清理",
+      cancel: "取消",
+
+      reportTitle: "清理结果",
+      /** deleted 为空时的展示 */
+      cleanupNothing: "没有需要清理的数据。",
+      cleanupDeleted: (label: string, rows: string) => `${label}：删除 ${rows} 行`,
+      cleanupFreed: (text: string) => `回收空间：${text}`,
+      /** 删了行但文件没变小：如实说明，不编造释放量 */
+      cleanupNoShrink: "删除了行但文件大小未变（SQLite 会复用空闲页）。",
+      cleanupErrorTitle: "清理失败",
+    },
+
+    // 2) 诊断导出
+    diagnostics: {
+      title: "诊断导出",
+      subtitle: "一键导出脱敏诊断包，并同时落盘",
+      export: "导出诊断包",
+      exporting: "导出中…",
+      errorTitle: "导出失败",
+
+      resultTitle: "导出结果",
+      path: "落盘路径",
+      copyPath: "复制路径",
+      copied: "已复制",
+      copyFailed: "复制失败，请手动选择文本复制。",
+      size: (text: string) => `文件大小：${text}`,
+      generatedAt: (time: string) => `生成时间：${time}`,
+      copyJson: "复制诊断包 JSON",
+      logFile: (path: string) => `日志文件：${path}`,
+
+      // 脱敏说明（三道结构性防线，逐条具体说明）
+      redactionTitle: "脱敏说明",
+      redactionIntro: "诊断包已脱敏，由三道结构性防线保证：",
+      redactionNoKeys: "不含密钥：凭据只给数量与权限属性，连打码后的 API Key 都没有。",
+      redactionNoRows: "不含账户与仓位明细：只统计行数，不导出任何业务数据行。",
+      redactionLogs: "日志已逐行脱敏：长随机串 / 家目录路径 / 凭据赋值都会被替换。",
+
+      // redactions 明细（让用户能自己核对）
+      redactionsTitle: "本次脱敏明细",
+      redactionNone: "本次没有需要脱敏的内容。",
+      redactionHit: (pattern: string, hits: number) => `${pattern} × ${hits}`,
+
+      // 凭据概览
+      credentialsTitle: "凭据概览",
+      credentialsCount: (n: number) => `共 ${n} 条凭据`,
+      credentialsNone: "没有已保存的凭据。",
+      credentialsNote: "仅数量与权限属性，不含任何密钥信息。",
+
+      // 日志尾部（已脱敏）
+      logTitle: "日志尾部（已脱敏）",
+      logShow: "展开",
+      logHide: "收起",
+
+      // 版本信息
+      appTitle: "版本信息",
+      appVersion: "应用版本",
+      coreVersion: "核心版本",
+      schemaVersion: "Schema 版本",
+      targetOs: "平台",
     },
   },
 

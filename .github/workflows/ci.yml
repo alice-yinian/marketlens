@@ -23,7 +23,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
-            libayatana-appindicator3-dev patchelf
+            libayatana-appindicator3-dev libxdo-dev libssl-dev patchelf
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -68,6 +68,11 @@ jobs:
 
       - name: 依赖安全审计（npm）
         run: npm audit --audit-level=high
+
+      # 签名补丁脚本改的是 CI 里临时生成的 Gradle 工程，本地跑不到，
+      # 所以它的逻辑必须有自己的自测
+      - name: Android 签名补丁脚本自测
+        run: python3 scripts/patch_android_signing.py --self-test
 
   windows:
     name: Windows 打包（NSIS + MSI）
@@ -117,6 +122,27 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
+      # `setup-android` 只装 SDK，**NDK 必须单独装**——Tauri 编译 Rust 到
+      # Android 时要用 NDK 里的 clang 与 sysroot，没有它整步直接失败。
+      - name: 安装 Android NDK
+        run: |
+          set -euo pipefail
+          # 优先用固定版本（可重复构建）；不可用时回退到最新版，
+          # 而不是让整条 CI 因为一个版本号失效而变红。
+          PINNED="27.0.12077973"
+          if sdkmanager --list 2>/dev/null | grep -q "ndk;$PINNED"; then
+            NDK_VERSION="$PINNED"
+          else
+            NDK_VERSION=$(sdkmanager --list 2>/dev/null \
+              | grep -oE 'ndk;[0-9]+\.[0-9]+\.[0-9]+' \
+              | sed 's/ndk;//' | sort -V | tail -1)
+            echo "::warning::固定版本 $PINNED 不可用，回退到 $NDK_VERSION"
+          fi
+          echo "使用 NDK $NDK_VERSION"
+          sdkmanager --install "ndk;$NDK_VERSION"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          ls "$ANDROID_HOME/ndk/$NDK_VERSION" >/dev/null
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
@@ -136,9 +162,49 @@ jobs:
       - name: 初始化 Android 工程
         run: npm run tauri android init
 
-      # 已确认的分发策略：自用 APK 为主，同时产出 AAB 备用
+      # 分发策略：自用 APK 为主，同时产出 AAB 备用。
+      #
+      # 签名：release 构建**必须签名**才能安装。有 keystore secret 就签，
+      # 没有就明确警告产物未签名——静默产出装不上的 APK 是最坏的结果。
+      - name: 配置 Android 签名
+        env:
+          KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEY_BASE64:-}" ]; then
+            echo "::warning::未配置 ANDROID_KEY_BASE64，产物将**未签名**，无法直接安装。"
+            echo "SIGNED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          cd src-tauri/gen/android
+          {
+            echo "keyAlias=$KEY_ALIAS"
+            echo "password=$KEY_PASSWORD"
+          } > keystore.properties
+          base64 -d <<< "$KEY_BASE64" > "$RUNNER_TEMP/keystore.jks"
+          echo "storeFile=$RUNNER_TEMP/keystore.jks" >> keystore.properties
+          cd - >/dev/null
+          # 打补丁失败会以非零退出（并输出 ::error::），不会静默产出未签名 APK
+          python3 scripts/patch_android_signing.py \
+            src-tauri/gen/android/app/build.gradle.kts
+          echo "SIGNED=true" >> "$GITHUB_ENV"
+
       - name: 构建 APK 与 AAB
         run: npm run tauri android build -- --apk --aab --split-per-abi
+
+      # 产物存在性检查：`upload-artifact` 的 if-no-files-found 只保证「有文件」，
+      # 不保证「是我们要的那几个」——这里把实际产物列出来，便于核对
+      - name: 列出产物
+        run: |
+          set -euo pipefail
+          find src-tauri/gen/android/app/build/outputs -name '*.apk' -o -name '*.aab' \
+            | sort | tee /tmp/artifacts.txt
+          test -s /tmp/artifacts.txt || { echo "::error::没有产出任何 APK/AAB"; exit 1; }
+          if [ "${SIGNED:-false}" != "true" ]; then
+            echo "::warning::产物未签名（未配置 keystore secret），无法直接安装。"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:

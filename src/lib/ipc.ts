@@ -13,8 +13,11 @@ import type {
   AccountSnapshot,
   AppInfo,
   BootstrapState,
+  CacheStats,
+  CleanupReport,
   CredentialMeta,
   CredentialProbe,
+  DiagnosticExport,
   ExecutionReport,
   FetchPlan,
   LiveSnapshot,
@@ -175,6 +178,18 @@ export interface Commands {
   prompt_build_live: { args: { request: BuildLiveRequest }; result: PromptOutput };
   /** 生成复盘提示词；会先同步官方历史仓位，首次可能慢几秒 */
   prompt_build_review: { args: { request: BuildReviewRequest }; result: PromptOutput };
+
+  // ---- M6 设置：缓存与诊断 ----
+  /** 缓存占用统计：数据库总大小 + 每张表的行数与保留策略 */
+  cache_stats: { args: undefined; result: CacheStats };
+  /**
+   * 按保留策略清理缓存并回收空间。
+   *
+   * **破坏性操作**：会真的删数据，界面必须先二次确认再调用。
+   */
+  cache_cleanup: { args: undefined; result: CleanupReport };
+  /** 一键导出脱敏诊断包（同时落盘），返回包内容与落盘路径 */
+  diagnostics_export: { args: undefined; result: DiagnosticExport };
 }
 
 /**

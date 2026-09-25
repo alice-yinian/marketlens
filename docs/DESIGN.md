@@ -1448,7 +1448,6 @@ MARKETLENS_BIN=src-tauri/target/release/marketlens scripts/headless-smoke.sh /tm
 2. **无头环境下 WebKit 必须强制软件渲染**：`WEBKIT_DISABLE_COMPOSITING_MODE=1`、`WEBKIT_DISABLE_DMABUF_RENDERER=1`、`LIBGL_ALWAYS_SOFTWARE=1`，否则白屏或崩溃。
 
 **验收边界（已确认）**：本机验证 Linux 桌面端；**Windows 与 Android 的构建验证交给 CI**（`windows-latest` 与 `ubuntu + Android SDK/NDK` 才是这两端的原生环境），运行验证由用户在其设备上完成。
-
 #### 14.1.1 密码派生必须优化编译（实测踩过）
 
 `src-tauri/Cargo.toml` 里有四个 `[profile.dev.package.*]` 的 `opt-level = 3` 覆盖：
@@ -1461,6 +1460,144 @@ MARKETLENS_BIN=src-tauri/target/release/marketlens scripts/headless-smoke.sh /tm
 
 这属于「功能正常但体验不可用」的问题：用户解锁密钥库要等几分钟，会以为应用卡死。
 设计文档原本只提到 `scrypt` 一项（来自插件文档的上游 bug 提示），实际需要覆盖四个包。
+
+---
+
+
+### 14.2 打包前置条件与签名（2026-09-25 核实）
+
+**本机的实际能力边界**（逐项核实过，不是推测）：
+
+| 能力 | 状态 |
+|---|---|
+| Linux release 构建 | ✅ 系统库齐全（webkit2gtk-4.1 / gtk+-3.0 / libsoup-3.0 均可 `pkg-config` 到） |
+| deb / rpm / AppImage 打包 | ❌ 无 `dpkg-deb`、`rpmbuild`、`appimagetool`、`linuxdeploy` |
+| Windows 打包 | ❌ 无 `x86_64-pc-windows-msvc` target，无 `makensis`、无 `wine` |
+| Android 打包 | ❌ 无 Android SDK、无 NDK（Rust target 倒是装好了） |
+
+所以本机能验证的是「**release 构建 + release 二进制实际跑起来**」，
+其余三端交给 CI（§14.1 已确认的验收边界）。
+
+#### Windows
+
+来自 Tauri 官方前置条件，均已确认：
+
+- **Microsoft C++ Build Tools**，勾选「Desktop development with C++」
+- **WebView2 Runtime**（安装程序会引导）
+- **MSI 需要 VBSCRIPT 可选功能**：若报 `failed to run light.exe`，
+  去「设置 → 应用 → 可选功能 → 更多 Windows 功能」勾上 VBSCRIPT。
+  Windows 11 24H2 起它**默认可能被移除**，这是构建 MSI 最常见的坑。
+
+产物：`nsis/*.exe` 与 `msi/*.msi`。
+
+#### Android
+
+官方要求五件套：**SDK Platform、Platform-Tools、NDK (Side by Side)、Build-Tools、
+Command-line Tools**。两个最容易漏的点：
+
+1. **NDK 必须单独安装**。`android-actions/setup-android` 只装 SDK，
+   而 Tauri 编译 Rust 到 Android 需要 NDK 里的 clang 与 sysroot——
+   没有它整步直接失败。CI 里已补上，并把 `NDK_HOME` 写进 `$GITHUB_ENV`。
+2. **`NDK_HOME` 必须指向版本子目录**（`$ANDROID_HOME/ndk/<version>`），
+   指向 `$ANDROID_HOME/ndk` 本身不行。
+
+Rust target：`aarch64-linux-android`、`armv7-linux-androideabi`、
+`i686-linux-android`、`x86_64-linux-android`。
+
+#### 签名
+
+**release 构建必须签名才能安装**，未签名的 APK 看起来完全正常，直到有人拿去装才发现装不上。
+
+Android 的签名配置走官方流程（`keystore.properties` + `build.gradle.kts` 的
+`signingConfigs`）。但 `src-tauri/gen/android/` **不入库**（每次 CI 重新生成，
+保证可重复），所以配置没法「提交一次就完事」——必须在 `tauri android init`
+之后自动打补丁：`scripts/patch_android_signing.py`。
+
+这个脚本的关键性质是**锚点找不到就报错退出**：静默跳过会产出一个看似正常的
+未签名 APK。它有内建自测（`--self-test`），在 CI 的 check job 里跑——
+脚本改的是 CI 里临时生成的工程，本地跑不到，逻辑必须自带验证。
+
+CI 需要的 secrets：
+
+| secret | 说明 |
+|---|---|
+| `ANDROID_KEY_BASE64` | `base64 -i upload-keystore.jks` 的输出 |
+| `ANDROID_KEY_ALIAS` | 通常是 `upload` |
+| `ANDROID_KEY_PASSWORD` | 生成 keystore 时设的密码 |
+
+未配置时 CI **不会失败**，但会输出 `::warning::` 明确说明产物未签名——
+比静默产出装不上的 APK 好得多。
+
+生成 keystore：
+
+```bash
+keytool -genkey -v -keystore ~/upload-keystore.jks \
+  -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+```
+
+#### 打包签名仍未验证
+
+**签名流程本身未经端到端验证**：本机没有 SDK，无法生成 Android 工程，
+也就无法确认补丁后的 Gradle 能编译通过。已验证的只有补丁脚本的逻辑（自测）
+与「锚点缺失时明确报错」。**首次跑通 CI 的 android job 才算真正验证。**
+
+---
+
+### 14.3 发布冒烟清单
+
+每个平台首次发布前逐项走一遍。**「能构建」不等于「能用」**——下面每一项都对应
+一个真实发生过的失败模式，不是走过场的勾选。
+
+#### 三端通用（必过）
+
+| # | 检查项 | 为什么 |
+|---|---|---|
+| 1 | 冷启动进引导页，3 步能走完 | 引导是唯一入口，它坏了应用等于不可用 |
+| 2 | 密钥库解锁后**冷重启**只要求解锁，不再要求重建 | 解锁状态不该被持久化，但凭据必须能重新解开 |
+| 3 | 实盘页拿到真实行情（3 个标的、无警告） | 验证出网、限流器、指标计算三段都通 |
+| 4 | 账户页显示真实权益与持仓 | 验证签名算法与私有端点 |
+| 5 | 复盘页采集 → 装配 → 统计 → 逐笔归因 | M3 + M4 全链 |
+| 6 | 提示词页：4 个内置模板都能渲染；切 L0/L1/L2 **内容随之变化** | M5 全链；切等级不生效是最隐蔽的失败 |
+| 7 | 提示词页：改模板正文，预览在 300ms 内更新 | 防抖坏了用户会以为编辑器没保存 |
+| 8 | 导出：复制到剪贴板有反馈；另存为产生「自定义」模板 | 导出是唯一的产出出口 |
+| 9 | 设置页：缓存统计有数据；清理有二次确认 | 清理不可撤销 |
+| 10 | 设置页：诊断导出成功，`redactions` 与实际相符 | 见下条 |
+
+#### 脱敏必须**人工核对一次**
+
+诊断包导出后，**打开 JSON 亲眼确认**：
+
+- 不含任何 `$` 金额、不含持仓明细
+- 不含 API Key 的任何片段（连打码后的都不该有）
+- 不含用户名（家目录路径已被替换成 `[已脱敏:家目录]`）
+
+自动化测试覆盖了这些（`system::diagnostics::security` 有 5 项），但**首次发布前
+人工看一遍**仍然值得：测试断言的是我想到的模式，而泄漏可能来自我没想到的地方。
+
+#### 分平台
+
+**Windows**
+- NSIS 安装包能装、能卸、开始菜单有项
+- 安装后**不依赖开发机环境**（WebView2 缺失时安装程序应引导安装）
+- MSI 若构建失败，先检查 VBSCRIPT 可选功能（§14.2）
+
+**Android**
+- APK 能安装（**未签名会装不上**，见 §14.2）
+- 冷启动不闪退（Android 上 WebView 初始化比桌面慢，启动期竞态最容易在这里暴露）
+- 切到后台再回来，实盘页数据仍正确（长连接已去掉，但缓存时间戳要正确）
+- 通知栏/状态栏无异常占用提示
+
+**Linux**
+- AppImage / deb 能跑（本机无打包工具，产物来自 CI）
+
+#### 已知的失败模式（清单的由来）
+
+- **debug 构建连 `devUrl` 而不是内嵌资源**：用 debug 二进制冒烟必须同时起 `npm run dev`，
+  否则白屏。这不是 bug，但会浪费半天去查「为什么白屏」。
+- **无头环境必须强制软件渲染**（§14.1）：`WEBKIT_DISABLE_COMPOSITING_MODE=1` 等三项，
+  否则白屏或崩溃。
+- **release 构建的 WebView 版本与开发机不同**：只在 release 上出现的渲染问题确实存在，
+  所以冒烟要用 release 产物。
 
 ---
 
