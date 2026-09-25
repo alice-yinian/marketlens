@@ -7,7 +7,37 @@ use tauri::{AppHandle, Manager};
 use crate::credentials::CredentialMeta;
 use crate::error::{AppError, AppResult};
 use crate::market::Candle;
+use crate::position::history::{ClosedPosition, ClosedPositionRow};
 use crate::position::trace::TraceRow;
+use crate::storage::TraceSnapshot;
+
+/// `candles` 表的读取行。
+///
+/// `confirm` 在库里是 0/1，读回来要还原成 bool——直接用 `Candle` 反序列化做不到。
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct CandleRow {
+    ts: i64,
+    open: f64,
+    high: f64,
+    low: f64,
+    close: f64,
+    vol: f64,
+    confirm: i64,
+}
+
+impl From<CandleRow> for Candle {
+    fn from(row: CandleRow) -> Self {
+        Self {
+            ts: row.ts,
+            open: row.open,
+            high: row.high,
+            low: row.low,
+            close: row.close,
+            vol: row.vol,
+            confirm: row.confirm != 0,
+        }
+    }
+}
 
 /// 超过这个「年龄」的时序点视为已定型。
 ///
@@ -305,6 +335,153 @@ impl Db {
             .fetch_one(&self.pool)
             .await?;
         Ok(count)
+    }
+
+    // ---- 历史仓位 ---------------------------------------------------------
+
+    /// 写入（或更新）已平仓位。
+    ///
+    /// `regime_snapshot` 存 JSON：归因数据是后来算出来的，用单独一列承载它，
+    /// 这样「同步」与「归因」两个阶段可以分开跑、分开重跑。
+    pub async fn upsert_closed_positions(&self, rows: &[ClosedPosition]) -> AppResult<()> {
+        let mut tx = self.pool.begin().await?;
+        let synced_at = crate::storage::now_ms();
+
+        for row in rows {
+            let regime = row
+                .regime
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|err| AppError::Config(format!("归因快照序列化失败：{err}")))?;
+
+            sqlx::query(
+                "INSERT OR REPLACE INTO position_history
+                    (pos_id, inst_id, direction, mgn_mode, lever, open_avg_px, close_avg_px,
+                     max_contracts, pnl, pnl_ratio, fee, funding_fee, realized_pnl,
+                     open_time, close_time, source, time_precision, regime_snapshot,
+                     max_favorable, max_adverse, synced_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&row.pos_id)
+            .bind(&row.inst_id)
+            .bind(&row.direction)
+            .bind(&row.mgn_mode)
+            .bind(row.lever)
+            .bind(row.open_avg_px)
+            .bind(row.close_avg_px)
+            .bind(row.max_contracts)
+            .bind(row.pnl)
+            .bind(row.pnl_ratio)
+            .bind(row.fee)
+            .bind(row.funding_fee)
+            .bind(row.realized_pnl)
+            .bind(row.open_time)
+            .bind(row.close_time)
+            .bind(&row.source)
+            .bind(&row.time_precision)
+            .bind(regime)
+            .bind(row.max_favorable)
+            .bind(row.max_adverse)
+            .bind(synced_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// 读取某时段内已平仓位（按平仓时间升序）。
+    pub async fn closed_positions_between(
+        &self,
+        from: i64,
+        to: i64,
+    ) -> AppResult<Vec<ClosedPosition>> {
+        let rows = sqlx::query_as::<_, ClosedPositionRow>(
+            "SELECT pos_id, inst_id, direction, mgn_mode, lever, open_avg_px, close_avg_px,
+                    max_contracts, pnl, pnl_ratio, fee, funding_fee, realized_pnl,
+                    open_time, close_time, source, time_precision, regime_snapshot,
+                    max_favorable, max_adverse
+             FROM position_history
+             WHERE close_time BETWEEN ? AND ?
+             ORDER BY close_time ASC",
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// 读取某时段内的全部留痕快照（按时间升序）。
+    pub async fn position_traces_between(
+        &self,
+        from: i64,
+        to: i64,
+    ) -> AppResult<Vec<TraceSnapshot>> {
+        let rows = sqlx::query_as::<_, TraceSnapshot>(
+            "SELECT ts, pos_id, inst_id, mgn_mode, lever, contracts, avg_px, upl, created_at
+             FROM position_trace
+             WHERE ts BETWEEN ? AND ?
+             ORDER BY ts ASC",
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    // ---- 时段重建（归因用）-------------------------------------------------
+
+    /// 取某时点之前最近的 `limit` 根 K 线，**按时间升序**返回。
+    ///
+    /// 升序是刻意的：指标计算全部假设升序，让调用方每次自己排序迟早会漏。
+    pub async fn candles_before(
+        &self,
+        inst_id: &str,
+        kind: &str,
+        bar: &str,
+        at: i64,
+        limit: i64,
+    ) -> AppResult<Vec<Candle>> {
+        let mut rows = sqlx::query_as::<_, CandleRow>(
+            "SELECT ts, open, high, low, close, vol, confirm FROM candles
+             WHERE inst_id = ? AND kind = ? AND bar = ? AND ts <= ?
+             ORDER BY ts DESC LIMIT ?",
+        )
+        .bind(inst_id)
+        .bind(kind)
+        .bind(bar)
+        .bind(at)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.reverse();
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// 取某时点之前最近的一个时序指标值。
+    pub async fn metric_value_before(
+        &self,
+        inst_id: &str,
+        metric: &str,
+        at: i64,
+    ) -> AppResult<Option<f64>> {
+        let value: Option<f64> = sqlx::query_scalar(
+            "SELECT value FROM metric_series
+             WHERE inst_id = ? AND metric = ? AND ts <= ?
+             ORDER BY ts DESC LIMIT 1",
+        )
+        .bind(inst_id)
+        .bind(metric)
+        .bind(at)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(value)
     }
 
     // ---- 本地留痕 ---------------------------------------------------------

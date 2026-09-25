@@ -4,12 +4,12 @@
 //! 看起来有依据、实际是猜测的结论——AI 会当真。所以分类结果是 `Option`，
 //! 拿不到就进 `unavailable` 并说明原因，由模板渲染成「数据不可得」。
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::market::{Candle, indicators};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export_to = "types.ts")]
 pub enum TrendRegime {
     Uptrend,
@@ -18,7 +18,7 @@ pub enum TrendRegime {
     Transition,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export_to = "types.ts")]
 pub enum VolRegime {
     Low,
@@ -27,7 +27,7 @@ pub enum VolRegime {
     Extreme,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export_to = "types.ts")]
 pub enum Crowding {
     LongCrowded,

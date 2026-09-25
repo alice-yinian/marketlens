@@ -1,6 +1,9 @@
 //! 仓位服务（设计文档 §6.4）。
 
 pub mod current;
+pub mod history;
+pub mod merge;
+pub mod stats;
 pub mod trace;
 
 use serde::Serialize;

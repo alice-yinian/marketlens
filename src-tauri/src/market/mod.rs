@@ -2,6 +2,7 @@
 
 pub mod indicators;
 pub mod live;
+pub mod reconstruct;
 pub mod regime;
 
 /// 单根 K 线。已从 OKX 的字符串数组解析为数值。

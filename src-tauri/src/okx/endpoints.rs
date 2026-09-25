@@ -51,6 +51,8 @@ pub mod private {
     pub const ACCOUNT_CONFIG: &str = "/api/v5/account/config";
     pub const ACCOUNT_BALANCE: &str = "/api/v5/account/balance";
     pub const ACCOUNT_POSITIONS: &str = "/api/v5/account/positions";
+    /// 已平仓位历史（游标 `after` 接受**时间戳**，传 posId 会报 51000）
+    pub const ACCOUNT_POSITIONS_HISTORY: &str = "/api/v5/account/positions-history";
 }
 
 /// 公开端点（无需鉴权）

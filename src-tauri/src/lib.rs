@@ -65,6 +65,7 @@ pub fn run() {
             commands::review::review_plan,
             commands::review::review_fetch,
             commands::review::review_cancel,
+            commands::review::review_context,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用启动失败");

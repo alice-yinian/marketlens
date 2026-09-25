@@ -7,8 +7,20 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use serde::Serialize;
+use ts_rs::TS;
+
 use crate::error::{AppError, AppResult};
 use crate::fetch::plan::FetchPlan;
+use crate::market::reconstruct;
+use crate::okx::client::OkxClient;
+use crate::position::history;
+use crate::position::history::ClosedPosition;
+use crate::position::merge::{self, MergeReport};
+use crate::position::stats::{self, ReviewStats};
+use crate::position::trace::{self, TraceCoverage};
+use crate::storage::Db;
+use crate::vault::Vault;
 
 /// 计划与取消令牌的注册表。
 #[derive(Default)]
@@ -79,6 +91,122 @@ impl ReviewRegistry {
     fn plans(&self) -> std::sync::MutexGuard<'_, HashMap<String, FetchPlan>> {
         self.plans.lock().unwrap_or_else(|err| err.into_inner())
     }
+}
+
+/// 复盘上下文：时段的历史仓位 + 归因 + 统计。
+///
+/// 这是 M4 的产出物，也是 M5 提示词模板的输入。装配流程刻意分成四步且每步都
+/// **如实上报自己的贡献与缺口**——复盘结论的可信度取决于用户是否知道数据从哪来。
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct ReviewContext {
+    #[ts(type = "number")]
+    pub from: i64,
+    #[ts(type = "number")]
+    pub to: i64,
+    pub bar: String,
+    /// 时段内的历史仓位（已合并双源、已归因）
+    pub positions: Vec<ClosedPosition>,
+    pub stats: ReviewStats,
+    pub merge: MergeReport,
+    pub trace: TraceCoverage,
+    /// 非致命问题：某一步失败不终止整批复盘
+    pub warnings: Vec<String>,
+}
+
+/// 装配复盘上下文。
+///
+/// 四步：
+///   1. 同步官方历史仓位（游标分页）
+///   2. 与本地留痕合并（补充极值、补全官方窗口之外的仓位）
+///   3. 为每笔仓位补上**开仓时刻**的市场状态
+///   4. 计算统计（含按市场状态分组）
+pub async fn build_context(
+    client: &OkxClient,
+    db: &Db,
+    vault: &Vault,
+    credential_id: &str,
+    from: i64,
+    to: i64,
+    bar: &str,
+) -> AppResult<ReviewContext> {
+    let mut warnings = Vec::new();
+
+    // 1. 官方历史仓位
+    let mut positions: Vec<ClosedPosition> =
+        match crate::credentials::credentials_for(vault, credential_id) {
+            Ok(credentials) => match history::sync(client, db, &credentials, from, to).await {
+                Ok(report) => {
+                    if !report.reached_from {
+                        warnings.push(
+                            "官方历史仓位在到达起始时间前已耗尽，该时段可能不完整".to_string(),
+                        );
+                    }
+                    db.closed_positions_between(from, to)
+                        .await
+                        .unwrap_or_default()
+                }
+                Err(err) => {
+                    warnings.push(format!("官方历史仓位同步失败：{err}"));
+                    // 同步失败时退回已落库的数据——旧的复盘结果仍然有价值
+                    db.closed_positions_between(from, to)
+                        .await
+                        .unwrap_or_default()
+                }
+            },
+            Err(err) => {
+                warnings.push(format!("凭据不可用：{err}"));
+                db.closed_positions_between(from, to)
+                    .await
+                    .unwrap_or_default()
+            }
+        };
+
+    // 2. 双源合并
+    let merge_report = match merge::merge_for_range(db, &mut positions, from, to).await {
+        Ok(report) => report,
+        Err(err) => {
+            warnings.push(format!("本地留痕合并失败：{err}"));
+            MergeReport {
+                from_official: positions.len(),
+                from_local: 0,
+                enriched: 0,
+                coverage_note: "本地留痕读取失败，未参与合并。".to_string(),
+            }
+        }
+    };
+
+    // 3. 归因：逐笔补上开仓时刻的市场状态
+    reconstruct::attribute(db, bar, &mut positions).await;
+
+    // 4. 统计
+    let stats = stats::compute(&positions);
+
+    // 留痕覆盖度（让用户自己判断样本可信度）
+    let trace = match trace::coverage(db, crate::storage::now_ms()).await {
+        Ok(coverage) => coverage,
+        Err(err) => {
+            warnings.push(format!("留痕覆盖度统计失败：{err}"));
+            TraceCoverage {
+                records: 0,
+                has_gaps: false,
+                max_gap_ms: 0,
+                last_trace_at: None,
+                note: "无法统计留痕覆盖度。".to_string(),
+            }
+        }
+    };
+
+    Ok(ReviewContext {
+        from,
+        to,
+        bar: bar.to_string(),
+        positions,
+        stats,
+        merge: merge_report,
+        trace,
+        warnings,
+    })
 }
 
 #[cfg(test)]

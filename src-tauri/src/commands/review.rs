@@ -10,6 +10,7 @@ use crate::okx::client::OkxClient;
 use crate::review::ReviewRegistry;
 use crate::settings;
 use crate::storage::Db;
+use crate::vault::Vault;
 
 /// 进度事件名。前端监听它来推进进度条。
 pub const PROGRESS_EVENT: &str = "fetch://progress";
@@ -125,4 +126,47 @@ pub async fn review_cancel(
     plan_id: String,
 ) -> AppResult<bool> {
     Ok(registry.cancel(&plan_id))
+}
+
+/// `review_context` 的入参。
+#[derive(Debug, Deserialize)]
+pub struct ContextRequest {
+    pub credential_id: String,
+    pub from: i64,
+    pub to: i64,
+    /// K 线粒度，缺省 `1H`
+    #[serde(default)]
+    pub bar: Option<String>,
+}
+
+/// 装配复盘上下文：时段内的历史仓位（双源合并 + 开仓时刻归因）+ 统计。
+///
+/// 与 `review_fetch` 分开是刻意的：**采集**负责把原始数据拉回本地，
+/// **装配**负责把它算成结论。两者可以独立重跑——改了统计口径只需重新装配，
+/// 不必再花几秒重新联网拉数据。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn review_context(
+    client: State<'_, OkxClient>,
+    db: State<'_, Db>,
+    vault: State<'_, Vault>,
+    request: ContextRequest,
+) -> AppResult<crate::review::ReviewContext> {
+    if request.to <= request.from {
+        return Err(AppError::Config("结束时间必须晚于开始时间".to_string()));
+    }
+    if request.to - request.from > MAX_RANGE_MS {
+        return Err(AppError::RangeTooLarge);
+    }
+
+    let bar = request.bar.unwrap_or_else(|| "1H".to_string());
+    crate::review::build_context(
+        &client,
+        &db,
+        &vault,
+        &request.credential_id,
+        request.from,
+        request.to,
+        &bar,
+    )
+    .await
 }
