@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: 检查（格式 / Clippy / 测试 / 类型契约）
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri 在 Linux 上链接 webkit2gtk 与 GTK，编译前必须装齐
+      - name: 安装 Linux 构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libayatana-appindicator3-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: 前端类型检查与构建
+        run: npm run build
+
+      - name: Rust 格式检查
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: Rust Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      # cargo test 会同时触发 ts-rs 的导出测试，把 Rust 结构体写成 src/lib/types.ts
+      - name: Rust 测试（含数据库迁移与类型导出）
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # 设计文档 §7.4：类型契约漂移必须让 CI 变红，否则前后端会悄悄对不上
+      - name: 校验前后端类型契约未漂移
+        run: |
+          if ! git diff --exit-code -- src/lib/types.ts; then
+            echo "::error::src/lib/types.ts 与 Rust 侧生成结果不一致。请本地运行 cargo test 后提交生成结果。"
+            exit 1
+          fi
+
+      - name: 依赖安全审计（Rust）
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 依赖安全审计（npm）
+        run: npm audit --audit-level=high
+
+  windows:
+    name: Windows 打包（NSIS + MSI）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # 设计文档 §14：Windows 产物为 NSIS(.exe) 与 MSI
+      - name: 构建安装包
+        run: npm run tauri build -- --bundles nsis,msi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: marketlens-windows
+          if-no-files-found: error
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+
+  android:
+    name: Android 打包（APK + AAB）
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Linux 构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # android/ 工程不入库（.gitignore），每次在 CI 里生成，保证可重复
+      - name: 初始化 Android 工程
+        run: npm run tauri android init
+
+      # 已确认的分发策略：自用 APK 为主，同时产出 AAB 备用
+      - name: 构建 APK 与 AAB
+        run: npm run tauri android build -- --apk --aab --split-per-abi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: marketlens-android
+          if-no-files-found: error
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+            src-tauri/gen/android/app/build/outputs/bundle/**/*.aab

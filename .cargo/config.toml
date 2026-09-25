@@ -1,0 +1,7 @@
+# ts-rs 把 `#[ts(export_to = "...")]` 解析为「相对于 TS_RS_EXPORT_DIR」的路径。
+# 这里把它固定到前端的 src/lib，使本地与 CI 的导出位置完全一致——
+# 类型契约漂移正是 CI 要拦的东西，导出路径若依赖环境变量就失去了意义（设计文档 §7.4）。
+#
+# relative = true 表示相对本配置文件所在目录的父目录（即仓库根）。
+[env]
+TS_RS_EXPORT_DIR = { value = "src/lib", relative = true }

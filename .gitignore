@@ -1,0 +1,26 @@
+# 依赖与产物
+node_modules/
+dist/
+src-tauri/target/
+
+# Tauri 生成的平台工程（android/ 需要提交，gen/ 是派生物）
+src-tauri/gen/
+
+# 本地环境
+*.local
+.env
+.env.*
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+
+# 密钥与凭据 —— 绝不入库
+*.hold
+*.jks
+*.keystore
+upload-keystore*
+
+# 崩溃转储（weston/WebKit 在无头环境下可能产生）
+core.*

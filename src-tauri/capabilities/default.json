@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "MarketLens 最小权限集。刻意只保留 core:default：本应用的全部能力都走自定义命令，不向 WebView 暴露任何插件能力（设计文档 §3.2 原则 2、§11）。后续若引入 Stronghold 等插件，其 JS 命令也不得加入此白名单——密钥只允许从 Rust 侧访问。",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
