@@ -3,6 +3,7 @@
 //! 一次 `fetch_snapshot` 会为每个标的发 5 个请求（ticker / funding / 标记价 / 指数价 / 1H K 线），
 //! 外加共享的 1 个持仓量请求和每个基础币 2 个 Rubik 请求。限流由 `OkxClient` 内部排队。
 
+use futures::future::join_all;
 use serde::Serialize;
 use ts_rs::TS;
 
@@ -94,7 +95,14 @@ pub struct LiveSnapshot {
 
 /// 拉取整批标的的市场状态。
 ///
-/// 单个标的失败不终止整次采集——用户宁可看到 2 个标的状态加 1 条警告，
+/// **两个阶段都并发**：
+///   1. 持仓量 + 每个基础币的 Rubik 统计（彼此无依赖）
+///   2. 各标的的完整状态（依赖阶段 1 的结果）
+///
+/// 速率控制交给限流器，而不是靠串行等待。串行版实测 3 个标的要 **18.6 秒**，
+/// 而限流器本就能正确排队——并发只是把网络往返重叠起来，不会突破任何配额。
+///
+/// 单个标的失败不终止整次采集：用户宁可看到 2 个标的状态加 1 条警告，
 /// 也不愿因为 SOL 的接口抖动而什么都看不到。
 pub async fn fetch_snapshot(
     client: &OkxClient,
@@ -103,33 +111,67 @@ pub async fn fetch_snapshot(
     let thresholds = Thresholds::default();
     let mut warnings = Vec::new();
 
-    let open_interest = fetch_open_interest(client).await;
-    if let Err(err) = &open_interest {
-        warnings.push(format!("持仓量获取失败：{err}"));
+    let mut distinct_ccys: Vec<String> = Vec::new();
+    for inst_id in watchlist {
+        let ccy = base_ccy_of(inst_id);
+        if !distinct_ccys.contains(&ccy) {
+            distinct_ccys.push(ccy);
+        }
     }
-    let open_interest = open_interest.unwrap_or_default();
+
+    // 阶段 1：持仓量与各货币组的统计互不依赖
+    let (open_interest, stats_results) = tokio::join!(
+        fetch_open_interest(client),
+        join_all(
+            distinct_ccys
+                .iter()
+                .map(|ccy| async move { (ccy.clone(), fetch_currency_stats(client, ccy).await) })
+        )
+    );
+
+    let open_interest = match open_interest {
+        Ok(map) => map,
+        Err(err) => {
+            warnings.push(format!("持仓量获取失败：{err}"));
+            std::collections::HashMap::new()
+        }
+    };
 
     let mut currency_cache: std::collections::HashMap<String, CurrencyStats> =
         std::collections::HashMap::new();
-    let mut instruments = Vec::with_capacity(watchlist.len());
-
-    for inst_id in watchlist {
-        let base_ccy = base_ccy_of(inst_id);
-
-        if !currency_cache.contains_key(&base_ccy) {
-            match fetch_currency_stats(client, &base_ccy).await {
-                Ok(stats) => {
-                    currency_cache.insert(base_ccy.clone(), stats);
-                }
-                Err(err) => {
-                    warnings.push(format!("{base_ccy} 的多空/主动买卖比获取失败：{err}"));
-                    currency_cache.insert(base_ccy.clone(), CurrencyStats::default());
-                }
+    for (ccy, result) in stats_results {
+        match result {
+            Ok(stats) => {
+                currency_cache.insert(ccy, stats);
+            }
+            Err(err) => {
+                warnings.push(format!("{ccy} 的多空/主动买卖比获取失败：{err}"));
+                currency_cache.insert(ccy, CurrencyStats::default());
             }
         }
-        let stats = currency_cache.get(&base_ccy).copied().unwrap_or_default();
+    }
 
-        match fetch_one(client, inst_id, stats, &open_interest, thresholds).await {
+    // 阶段 2：各标的之间无依赖。
+    // 先把 map 取成引用：`async move` 会移动捕获的变量，而引用是 Copy，
+    // 这样每个并发任务拿到的是同一份数据的借用而不是所有权。
+    let open_interest = &open_interest;
+    let results = join_all(watchlist.iter().map(|inst_id| {
+        let stats = currency_cache
+            .get(&base_ccy_of(inst_id))
+            .copied()
+            .unwrap_or_default();
+        async move {
+            (
+                inst_id,
+                fetch_one(client, inst_id, stats, open_interest, thresholds).await,
+            )
+        }
+    }))
+    .await;
+
+    let mut instruments = Vec::with_capacity(watchlist.len());
+    for (inst_id, result) in results {
+        match result {
             Ok(state) => instruments.push(state),
             Err(err) => warnings.push(format!("{inst_id} 获取失败：{err}")),
         }
@@ -407,11 +449,18 @@ mod tests {
     #[ignore = "访问真实 OKX API，需显式运行"]
     async fn okx_live_snapshot_is_sane() {
         let client = OkxClient::new().expect("客户端构造失败");
-        let watchlist = vec!["BTC-USDT-SWAP".to_string()];
+        // 用默认标的集（3 个）而不是单个：这样才会走到并发路径，
+        // 单标的测试覆盖不到并发相关的编译或行为问题。
+        let watchlist = crate::settings::default_watchlist();
 
         let (instruments, warnings) = fetch_snapshot(&client, &watchlist).await.expect("采集失败");
 
         assert!(warnings.is_empty(), "不应有警告：{warnings:#?}");
+        assert_eq!(
+            instruments.len(),
+            watchlist.len(),
+            "每个标的都应有状态，实际 {instruments:#?}"
+        );
         let state = instruments.first().expect("应返回 BTC 的状态");
 
         println!("=== BTC-USDT-SWAP ===");
@@ -473,7 +522,11 @@ mod tests {
             .get_public::<Vec<String>>(
                 public::CANDLES,
                 RateGroup::Market,
-                &[("instId", "BTC-USDT-SWAP"), ("bar", "1H"), ("limit", CANDLE_LIMIT)],
+                &[
+                    ("instId", "BTC-USDT-SWAP"),
+                    ("bar", "1H"),
+                    ("limit", CANDLE_LIMIT),
+                ],
             )
             .await
             .expect("K 线拉取失败");

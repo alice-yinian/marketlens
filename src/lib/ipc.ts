@@ -8,11 +8,15 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 
-import type { AppInfo } from "./types";
+import type { AppInfo, LiveSnapshot } from "./types";
 
 /** 命令名 → { 入参, 出参 } 的单一事实来源 */
 export interface Commands {
   app_info: { args: undefined; result: AppInfo };
+  /** 刷新实盘快照；`force: true` 绕过 TTL 缓存（对应界面上的「刷新」按钮） */
+  live_refresh: { args: { force?: boolean }; result: LiveSnapshot };
+  /** 读取标的集，纯本地操作 */
+  watchlist_get: { args: undefined; result: string[] };
 }
 
 /**

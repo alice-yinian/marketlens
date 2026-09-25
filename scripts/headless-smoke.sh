@@ -107,8 +107,9 @@ for _ in $(seq 1 80); do
   grep -q "数据库就绪" "$APP_LOG" 2>/dev/null && break
   sleep 0.25
 done
-# 迁移完成 ≠ 首屏渲染完成，给 WebView 加载与 React 挂载留时间
-sleep 8
+# 迁移完成 ≠ 首屏渲染完成。实盘页挂载后会立刻发起一次真实采集
+# （3 个标的约 22 个请求，实测 2~4 秒），所以等待要覆盖它。
+sleep "${MARKETLENS_WAIT:-12}"
 
 echo "[3/5] 应用日志"
 cat "$APP_LOG"

@@ -41,6 +41,7 @@ reqwest = { version = "0.13.5", default-features = false, features = [
     "http2",
     "query",
 ] }
+futures = { version = "0.3.34", default-features = false, features = ["std", "alloc"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
