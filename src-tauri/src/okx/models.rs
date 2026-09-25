@@ -60,6 +60,100 @@ pub struct FundingRateHistory {
     pub funding_time: i64,
 }
 
+/// `GET /api/v5/account/positions-history`（已平仓位）
+///
+/// 字段名全部来自真机核对（2026-09-25）——初版设计文档写的是 `openTime`/`closeTime`，
+/// 实测其实是 **`cTime`/`uTime`**。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OkxClosedPosition {
+    pub pos_id: String,
+    pub inst_id: String,
+    #[serde(default)]
+    pub inst_type: String,
+    /// 标的指数，如 `SOL-USDT`
+    #[serde(default)]
+    pub uly: String,
+    /// **净持仓模式下恒为 `net`**
+    pub pos_side: String,
+    /// **真实的持仓方向（`long` / `short`）**。
+    ///
+    /// 这是净持仓模式下唯一能判断方向的字段——只看 `posSide` 会把多空单混为一谈，
+    /// 而方向是复盘统计里最基本的维度。
+    #[serde(default)]
+    pub direction: String,
+    pub mgn_mode: String,
+    #[serde(deserialize_with = "de::num")]
+    pub lever: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub open_avg_px: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub close_avg_px: f64,
+    /// 持仓期间的最大张数
+    #[serde(deserialize_with = "de::num")]
+    pub open_max_pos: f64,
+    /// 平仓时的总张数
+    #[serde(deserialize_with = "de::num")]
+    pub close_total_pos: f64,
+    /// 价差盈亏（不含费用）
+    #[serde(deserialize_with = "de::num")]
+    pub pnl: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub pnl_ratio: f64,
+    /// 已实现盈亏（含费用）
+    #[serde(deserialize_with = "de::num")]
+    pub realized_pnl: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub fee: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub funding_fee: f64,
+    #[serde(deserialize_with = "de::num", default)]
+    pub liq_penalty: f64,
+    /// 开仓时间
+    #[serde(deserialize_with = "de::ts")]
+    pub c_time: i64,
+    /// 平仓时间
+    #[serde(deserialize_with = "de::ts")]
+    pub u_time: i64,
+    #[serde(default)]
+    pub ccy: String,
+    /// 平仓类型（`type` 是 Rust 关键字，改名后 rename 回去）
+    #[serde(rename = "type", default)]
+    pub close_type: String,
+}
+
+/// `GET /api/v5/trade/fills-history`（成交明细）
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OkxFill {
+    pub trade_id: String,
+    #[serde(default)]
+    pub ord_id: String,
+    pub inst_id: String,
+    #[serde(default)]
+    pub inst_type: String,
+    /// `buy` | `sell`
+    pub side: String,
+    #[serde(default)]
+    pub pos_side: String,
+    #[serde(deserialize_with = "de::num")]
+    pub fill_px: f64,
+    #[serde(deserialize_with = "de::num")]
+    pub fill_sz: f64,
+    #[serde(deserialize_with = "de::num", default)]
+    pub fee: f64,
+    #[serde(default)]
+    pub fee_ccy: String,
+    #[serde(deserialize_with = "de::num", default)]
+    pub fill_pnl: f64,
+    #[serde(deserialize_with = "de::opt_num", default)]
+    pub fill_mark_px: Option<f64>,
+    #[serde(default)]
+    pub exec_type: String,
+    #[serde(deserialize_with = "de::ts")]
+    pub fill_time: i64,
+}
+
 /// `GET /api/v5/account/config`
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -532,5 +626,67 @@ mod tests {
         assert_eq!(position.c_time, 1_790_327_749_733);
         assert_eq!(position.u_time, 1_790_327_749_733);
         assert!((position.realized_pnl + 0.293575).abs() < 1e-9);
+    }
+
+    /// 已平仓位的夹具来自模拟盘真实响应。
+    #[test]
+    fn closed_position_maps_real_response() {
+        let raw = r#"{"code":"0","data":[{"cTime":"1790327693740","ccy":"USDT",
+            "closeAvgPx":"117.45","closeTotalPos":"15","direction":"long",
+            "fee":"-1.7618501","fundingFee":"0","instId":"SOL-USDT-SWAP",
+            "instType":"SWAP","lever":"3.0","liqPenalty":"0","mgnMode":"cross",
+            "nonSettleAvgPx":"","openAvgPx":"117.4633466666666668","openMaxPos":"15",
+            "pnl":"-0.200200000000002","pnlRatio":"-0.003340701854116",
+            "posId":"3953560806705233921","posSide":"net",
+            "realizedPnl":"-1.962050100000002","settledPnl":"","triggerPx":"",
+            "type":"2","uTime":"1790327703378","uly":"SOL-USDT"}],"msg":""}"#;
+
+        let env: Envelope<OkxClosedPosition> = serde_json::from_str(raw).expect("反序列化失败");
+        let closed = &env.data[0];
+
+        assert_eq!(closed.pos_id, "3953560806705233921");
+        assert_eq!(closed.pos_side, "net", "净持仓模式下 posSide 恒为 net");
+        assert_eq!(
+            closed.direction, "long",
+            "方向必须取自 direction —— 只看 posSide 会把多空混为一谈"
+        );
+        assert_eq!(closed.inst_id, "SOL-USDT-SWAP");
+        assert!((closed.open_avg_px - 117.4633466666666668).abs() < 1e-9);
+        assert!((closed.close_avg_px - 117.45).abs() < 1e-9);
+        assert!((closed.open_max_pos - 15.0).abs() < 1e-9);
+
+        // 开平仓时间在 cTime / uTime 上，不是 openTime / closeTime
+        assert_eq!(closed.c_time, 1_790_327_693_740);
+        assert_eq!(closed.u_time, 1_790_327_703_378);
+        assert!(closed.u_time > closed.c_time, "平仓应晚于开仓");
+
+        // 价差盈亏与含费用的已实现盈亏是两个不同的数
+        assert!((closed.pnl + 0.200200000000002).abs() < 1e-9);
+        assert!((closed.realized_pnl + 1.962050100000002).abs() < 1e-9);
+        assert!(
+            closed.realized_pnl < closed.pnl,
+            "含费用的已实现盈亏应低于价差盈亏（费用为负）"
+        );
+        assert_eq!(closed.close_type, "2");
+    }
+
+    #[test]
+    fn fill_maps_real_response() {
+        let raw = r#"{"code":"0","data":[{"billId":"3953562685552099329","clOrdId":"",
+            "execType":"T","fee":"-0.293575","feeCcy":"USDT","fillIdxPx":"117.462",
+            "fillMarkPx":"117.42","fillPnl":"0","fillPx":"117.43","fillSz":"5",
+            "fillTime":"1790327749733","instId":"SOL-USDT-SWAP","instType":"SWAP",
+            "ordId":"3953562685518544896","posSide":"net","side":"buy","subType":"1",
+            "tradeId":"2488365792","ts":"1790327749734"}],"msg":""}"#;
+
+        let env: Envelope<OkxFill> = serde_json::from_str(raw).expect("反序列化失败");
+        let fill = &env.data[0];
+
+        assert_eq!(fill.trade_id, "2488365792");
+        assert_eq!(fill.side, "buy");
+        assert!((fill.fill_px - 117.43).abs() < 1e-9);
+        assert!((fill.fill_sz - 5.0).abs() < 1e-9);
+        assert_eq!(fill.fill_time, 1_790_327_749_733);
+        assert!((fill.fee + 0.293575).abs() < 1e-9);
     }
 }

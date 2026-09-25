@@ -129,6 +129,17 @@ impl OkxClient {
                     })?;
 
                     if envelope.code != "0" {
+                        // 瞬时业务错误也值得重试（见 is_retryable_business_code）
+                        if is_retryable_business_code(&envelope.code) && attempt < MAX_ATTEMPTS {
+                            tracing::warn!(
+                                path = request_path,
+                                code = %envelope.code,
+                                attempt,
+                                "OKX 返回瞬时业务错误码，退避后重试"
+                            );
+                            tokio::time::sleep(backoff(attempt)).await;
+                            continue;
+                        }
                         return Err(AppError::Okx {
                             code: envelope.code,
                             msg: envelope.msg,
@@ -178,6 +189,19 @@ fn iso_timestamp_now() -> String {
         .to_string()
 }
 
+/// OKX 的业务错误码里，这些是**瞬时**的，值得重试。
+///
+/// 大多数业务错误（参数错、权限不足）重试确实无意义，但有一类是服务端临时故障：
+/// 实测遇到过 `50001 Service temporarily unavailable`——**同一个请求立刻重试就成功了**。
+/// 把它一律归为「不可重试」会让用户看到一个本可自愈的失败，而错误信息里
+/// 没有任何线索提示「再点一次就好」。
+///
+/// 列表刻意只收录**实际观察到过**的码，不按猜测扩充——猜错的代价是重试一个
+/// 永远失败的业务错误，白等几秒。
+fn is_retryable_business_code(code: &str) -> bool {
+    matches!(code, "50001")
+}
+
 /// 指数退避 + 抖动，上限 [`BACKOFF_CAP`]。
 ///
 /// 抖动是必需的：采集计划里多条序列会同时失败、同时退避，
@@ -213,6 +237,24 @@ mod tests {
                 "第 {attempt} 次退避超过上限：{delay:?}"
             );
         }
+    }
+
+    /// 瞬时业务错误必须被识别为可重试。
+    ///
+    /// `50001` 是实测遇到的（服务端临时不可用，立刻重试即成功）。
+    /// 参数类错误绝不能被当成可重试——否则会白等几秒再失败。
+    #[test]
+    fn transient_business_codes_are_retryable_but_parameter_errors_are_not() {
+        assert!(is_retryable_business_code("50001"), "实测瞬时错误应可重试");
+        assert!(
+            !is_retryable_business_code("51000"),
+            "参数错误重试无意义，不该白等"
+        );
+        assert!(
+            !is_retryable_business_code("50113"),
+            "签名错误重试也不会变好"
+        );
+        assert!(!is_retryable_business_code("50101"), "环境不匹配重试无意义");
     }
 
     #[test]
