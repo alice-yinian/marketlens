@@ -496,12 +496,33 @@ mod security {
         db
     }
 
+    /// 每次调用一个独占的日志目录。
+    ///
+    /// 名字里必须带这个序号：`bundle_json()` 由四个测试并行调用，而目录名
+    /// **只**由毫秒时间戳决定时，两个调用落在同一毫秒（时钟粒度粗的机器上很常见）
+    /// 就会共用同一个目录 —— 先跑完的那个 `remove_dir_all` 把另一个正要读的日志
+    /// 删掉，于是 `build` 走到「读不到日志文件」分支，把正文换成一行错误说明，
+    /// 「日志正文应保留」随机变红。CI 上真的红过一次；把时间戳固定成常量后，
+    /// 本地 30 次能复现 2 次，失败签名与 CI 一模一样。
+    ///
+    /// 序号与调用次数绑定，名字的唯一性就不再取决于两次调用隔了多少毫秒。
+    static LOG_DIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    fn unique_log_dir() -> std::path::PathBuf {
+        let seq = LOG_DIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "ml-diag-{}-{}-{seq}",
+            std::process::id(),
+            crate::storage::now_ms()
+        ))
+    }
+
     /// 把诊断包序列化成 JSON —— 这正是用户会粘贴出去的东西。
     async fn bundle_json() -> String {
         let db = seeded_db().await;
 
         // 造一个含密钥的日志文件
-        let dir = std::env::temp_dir().join(format!("ml-diag-{}", crate::storage::now_ms()));
+        let dir = unique_log_dir();
         std::fs::create_dir_all(&dir).expect("创建临时目录失败");
         let log_path = dir.join("marketlens.log");
         std::fs::write(
