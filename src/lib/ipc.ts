@@ -32,6 +32,7 @@ import type {
   ProxySettings,
   ReviewContext,
   TemplateKind,
+  Theme,
   VaultStatus,
   WatchlistCandidate,
 } from "./types";
@@ -222,6 +223,10 @@ export interface Commands {
   privacy_get: { args: undefined; result: PrivacyLevel };
   /** 设置全局隐私等级；改完各页面的提示词会按新等级重新生成 */
   privacy_set: { args: { level: PrivacyLevel }; result: PrivacyLevel };
+  /** 读取界面主题（`system` / `light` / `dark`） */
+  theme_get: { args: undefined; result: Theme };
+  /** 设置界面主题；`system` 表示跟随操作系统的深色模式 */
+  theme_set: { args: { theme: Theme }; result: Theme };
   /** 生成实盘提示词；命中行情 30 秒缓存则不重复请求 */
   prompt_build_live: { args: { request: BuildLiveRequest }; result: PromptOutput };
   /** 生成复盘提示词；会先同步官方历史仓位，首次可能慢几秒 */

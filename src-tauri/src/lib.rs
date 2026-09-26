@@ -102,8 +102,10 @@ pub fn run() {
             commands::prompt::template_save,
             commands::prompt::template_delete,
             commands::prompt::template_check,
-            commands::prompt::privacy_get,
-            commands::prompt::privacy_set,
+            commands::settings::privacy_get,
+            commands::settings::privacy_set,
+            commands::settings::theme_get,
+            commands::settings::theme_set,
             commands::prompt::prompt_build_live,
             commands::prompt::prompt_build_review,
             commands::system::cache_stats,
@@ -214,6 +216,7 @@ mod tests {
     use crate::position::trace::TraceCoverage;
     use crate::position::{AccountOverview, AccountSnapshot, CurrencyBalance, Position};
     use crate::review::ReviewContext;
+    use crate::settings::Theme;
     use crate::system::AppInfo;
 
     /// 去掉 TS 源码里的块注释。
@@ -325,6 +328,7 @@ mod tests {
             KlinePlan,
             KlineBarPlan,
             BarOption,
+            Theme,
             IndicatorKind,
             IndicatorSpec,
         );

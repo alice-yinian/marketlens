@@ -61,6 +61,7 @@ function mockIpc(state: BootstrapState) {
       });
     }
     if (cmd === "credentials_list") return Promise.resolve([]);
+    if (cmd === "theme_get") return Promise.resolve("light");
     return Promise.resolve(null);
   });
 }
@@ -170,6 +171,20 @@ describe("App 闸门", () => {
       S.nav.prompt,
       S.nav.settings,
     ]);
+  });
+
+  /// 主题是**全局副作用**，由顶层应用一次：设置页只负责改值。
+  /// 这条守住「有人在顶层调用它」——漏了的话设置页点了没反应，而且很难查。
+  it("顶层把主题写到 <html data-theme>（设置存的是 light 时）", async () => {
+    mockIpc({
+      vault_exists: true,
+      vault_unlocked: true,
+      onboarding_done: true,
+      watchlist: [],
+    });
+    await renderApp();
+
+    expect(document.documentElement.dataset.theme).toBe("light");
   });
 
   it("切换到「账户」标签渲染账户页", async () => {

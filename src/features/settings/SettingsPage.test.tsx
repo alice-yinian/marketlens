@@ -84,6 +84,8 @@ function defaultMock(cmd: string): Promise<unknown> {
       return Promise.resolve({ url: null });
     case "privacy_get":
       return Promise.resolve("L1");
+    case "theme_get":
+      return Promise.resolve("system");
     default:
       return Promise.reject(new Error(`unexpected command: ${cmd}`));
   }
@@ -352,6 +354,42 @@ describe("SettingsPage 网络代理", () => {
     expect(input(host).value).toBe("");
     // 清除不该顺带发一次探测请求
     expect(callsOf("proxy_test")).toHaveLength(0);
+  });
+});
+
+describe("SettingsPage 界面主题", () => {
+  it("三档都渲染，并说明跟随系统会随系统切换", async () => {
+    const host = await renderPage();
+
+    expect(host.textContent).toContain(S.settings.theme.title);
+    expect(host.textContent).toContain(S.settings.theme.subtitle);
+    expect(host.textContent).toContain(S.settings.theme.system);
+    expect(host.textContent).toContain(S.settings.theme.systemDesc);
+    expect(host.textContent).toContain(S.settings.theme.light);
+    expect(host.textContent).toContain(S.settings.theme.dark);
+  });
+
+  it("点击「日间」调用 theme_set（入参就是这一档）并更新「当前」", async () => {
+    callMock.mockImplementation((cmd: string, args?: { theme?: string }) => {
+      if (cmd === "theme_set") return Promise.resolve(args?.theme ?? null);
+      return defaultMock(cmd);
+    });
+    const host = await renderPage();
+
+    await click(buttonContaining(host, S.settings.theme.light));
+
+    expect(callMock).toHaveBeenCalledWith("theme_set", { theme: "light" });
+    expect(host.textContent).toContain(S.settings.theme.current(S.settings.theme.light));
+  });
+
+  /// 「跟随系统」下用户无法从设置本身看出现在到底是日间还是夜间，
+  /// 所以必须把**实际生效**的那一档写出来。
+  it("跟随系统时写出实际生效的档位（jsdom 无 matchMedia → 夜间）", async () => {
+    const host = await renderPage();
+
+    expect(host.textContent).toContain(
+      S.settings.theme.currentFollowed(S.settings.theme.dark),
+    );
   });
 });
 

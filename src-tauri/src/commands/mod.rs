@@ -5,5 +5,6 @@ pub mod live;
 pub mod network;
 pub mod prompt;
 pub mod review;
+pub mod settings;
 pub mod system;
 pub mod vault;

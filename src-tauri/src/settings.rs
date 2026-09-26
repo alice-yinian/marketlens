@@ -1,5 +1,8 @@
 //! 用户设置。
 
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
 use crate::error::{AppError, AppResult};
 use crate::prompt::privacy::PrivacyLevel;
 use crate::storage::Db;
@@ -15,6 +18,50 @@ pub const KEY_ONBOARDING_DONE: &str = "onboarding_done";
 /// 不存在「这个页面用 L1、那个页面用 L0」的状态——那种状态下用户根本无法解释
 /// 「为什么同一笔仓位在 A 页是百分比、在 B 页是原始金额」。
 pub const KEY_PRIVACY_LEVEL: &str = "privacy_level";
+
+/// 界面主题的键名。
+///
+/// 默认**跟随系统**：大多数人不会专门去调主题，而他们的系统偏好已经表达了意图。
+pub const KEY_THEME: &str = "theme";
+
+/// 界面主题。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export_to = "types.ts")]
+#[serde(rename_all = "snake_case")]
+pub enum Theme {
+    /// 跟随操作系统的 `prefers-color-scheme`。
+    #[default]
+    System,
+    /// 日间（浅色）。
+    Light,
+    /// 夜间（深色）。
+    Dark,
+}
+
+/// 读取主题设置。未设置或内容损坏时回落到默认值（跟随系统）。
+///
+/// 与代理、隐私等级同一条规则：配置坏了不阻塞启动，回落并留日志。
+pub async fn read_theme(db: &Db) -> AppResult<Theme> {
+    let Some(raw) = db.get_setting(KEY_THEME).await? else {
+        return Ok(Theme::default());
+    };
+
+    match serde_json::from_str::<Theme>(&raw) {
+        Ok(theme) => Ok(theme),
+        Err(err) => {
+            tracing::warn!(%err, "主题配置无法解析，本轮回落默认值");
+            Ok(Theme::default())
+        }
+    }
+}
+
+/// 写入主题设置，返回落库后的值。
+pub async fn write_theme(db: &Db, theme: Theme) -> AppResult<Theme> {
+    let raw = serde_json::to_string(&theme)
+        .map_err(|err| AppError::Config(format!("主题无法序列化：{err}")))?;
+    db.set_setting(KEY_THEME, &raw).await?;
+    Ok(theme)
+}
 
 /// 网络代理的键名。未设置 = 直连（并**沿用系统/环境变量代理**，见 `reqwest` 的 `system-proxy`）。
 ///
@@ -218,6 +265,34 @@ pub fn redact_proxy(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 默认跟随系统：大多数人不会专门调主题，而系统偏好已经表达了意图。
+    #[tokio::test]
+    async fn theme_defaults_to_system_when_unset() {
+        let db = Db::open_in_memory().await.expect("内存库创建失败");
+        assert_eq!(read_theme(&db).await.expect("应能读取"), Theme::System);
+    }
+
+    #[tokio::test]
+    async fn theme_round_trips() {
+        let db = Db::open_in_memory().await.expect("内存库创建失败");
+
+        for theme in [Theme::Light, Theme::Dark, Theme::System] {
+            write_theme(&db, theme).await.expect("应能写入");
+            assert_eq!(read_theme(&db).await.expect("应能读取"), theme);
+        }
+    }
+
+    /// 与隐私等级同一条规则：配置坏了回落默认值并留日志，不阻塞启动。
+    #[tokio::test]
+    async fn corrupt_theme_falls_back_to_the_default() {
+        let db = Db::open_in_memory().await.expect("内存库创建失败");
+        db.set_setting(KEY_THEME, "\"neon\"")
+            .await
+            .expect("应能写入");
+
+        assert_eq!(read_theme(&db).await.expect("应能读取"), Theme::System);
+    }
 
     /// 默认值是 L1——设计文档确认过的那一档，不是「随便取一个」。
     #[tokio::test]

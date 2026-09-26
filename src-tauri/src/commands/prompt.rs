@@ -140,23 +140,6 @@ pub async fn template_check(body: String) -> AppResult<Vec<String>> {
     render::check(&body)
 }
 
-/// 读取全局隐私等级。
-#[tauri::command]
-pub async fn privacy_get(db: State<'_, Db>) -> AppResult<PrivacyLevel> {
-    settings::read_privacy(&db).await
-}
-
-/// 设置全局隐私等级。
-///
-/// 写到 `settings` 而不是各页面自己的状态里：三条提示词管线都读同一个值，
-/// 用户不必、也不该在三个地方分别维护「AI 能看到什么」。
-#[tauri::command]
-pub async fn privacy_set(db: State<'_, Db>, level: PrivacyLevel) -> AppResult<PrivacyLevel> {
-    let saved = settings::write_privacy(&db, level).await?;
-    tracing::info!(level = saved.as_str(), "全局隐私等级已更新");
-    Ok(saved)
-}
-
 // ------------------------------------------------------------------ 生成提示词
 
 #[derive(Debug, Deserialize)]

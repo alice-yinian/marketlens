@@ -400,8 +400,11 @@ export function KlinePage() {
 
       <ExportBar
         output={output}
-        // 行情不受隐私分级影响：这里传 L0 只是走既有签名，导出文件名里不会带等级含义
-        privacy="L0"
+        // 必须传**当前全局等级**，不能写死：导出判定与文件名都用它
+        // （L0 要二次确认、文件名带等级后缀）。写死 L0 的后果是
+        // 「设置里明明是 L1，行情页导出却要求确认完整金额泄露」，
+        // 以及文件名谎报等级。
+        privacy={privacy}
         templateName={
           marketTemplates.find((template) => template.id === templateId)?.name ?? S.kline.title
         }

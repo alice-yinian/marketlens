@@ -640,6 +640,48 @@ describe("KlinePage 提示词与模板", () => {
     expect(host.textContent).toContain(S.prompt.preview.templateName("行情结构模板"));
   });
 
+  /**
+   * 导出判定必须跟着**全局**隐私等级。
+   *
+   * 这条守的是一个真实缺陷：行情页曾把等级写死成 `L0` 传给导出栏，
+   * 于是设置里明明是 L1，导出时却要用户确认「会包含完整金额」，
+   * 文件名也跟着谎报等级。
+   */
+  it("导出的 L0 二次确认跟着全局等级走：L1 不确认", async () => {
+    callMock.mockImplementation((cmd: string) => {
+      if (cmd === "kline_plan") return Promise.resolve(planOf());
+      if (cmd === "kline_fetch") return Promise.resolve(reportOf());
+      if (cmd === "kline_build") return Promise.resolve(outputOf());
+      if (cmd === "privacy_get") return Promise.resolve("L1");
+      return defaultMock(cmd);
+    });
+    const host = await renderPage();
+    await click(button(host, S.kline.plan));
+    await click(button(host, S.kline.fetch));
+    await click(button(host, S.kline.build));
+
+    await click(button(host, S.prompt.export.copy));
+    expect(host.textContent).not.toContain(S.prompt.export.l0WarningTitle);
+  });
+
+  it("导出的 L0 二次确认跟着全局等级走：L0 必须确认", async () => {
+    callMock.mockImplementation((cmd: string) => {
+      if (cmd === "kline_plan") return Promise.resolve(planOf());
+      if (cmd === "kline_fetch") return Promise.resolve(reportOf());
+      if (cmd === "kline_build") return Promise.resolve(outputOf());
+      if (cmd === "privacy_get") return Promise.resolve("L0");
+      return defaultMock(cmd);
+    });
+    const host = await renderPage();
+    await click(button(host, S.kline.plan));
+    await click(button(host, S.kline.fetch));
+    await click(button(host, S.kline.build));
+
+    await click(button(host, S.prompt.export.copy));
+    expect(host.textContent).toContain(S.prompt.export.l0WarningTitle);
+    expect(button(host, S.prompt.export.confirm)).toBeTruthy();
+  });
+
   it("kline_build 失败时原样展示后端消息（模板语法错误是用户唯一的线索）", async () => {
     const message = "模板语法错误：第 3 行 {{ ohlc_json }} 之后缺少 `}}`";
     callMock.mockImplementation((cmd: string) => {

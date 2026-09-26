@@ -20,6 +20,7 @@ import { OnboardingPage } from "./features/onboarding/OnboardingPage";
 import { PromptPage } from "./features/prompt/PromptPage";
 import { ReviewPage } from "./features/review/ReviewPage";
 import { SettingsPage } from "./features/settings/SettingsPage";
+import { useAppliedTheme } from "./features/settings/useTheme";
 import { call } from "./lib/ipc";
 import { S } from "./lib/strings";
 import type { BootstrapState } from "./lib/types";
@@ -141,6 +142,8 @@ function MainShell({
 
 export default function App() {
   const queryClient = useQueryClient();
+  // 主题是全局副作用，只在这里应用一次：设置页只负责改值
+  useAppliedTheme();
   const bootstrap = useQuery({
     queryKey: BOOTSTRAP_KEY,
     queryFn: () => call("bootstrap_state"),

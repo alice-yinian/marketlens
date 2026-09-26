@@ -27,6 +27,7 @@ import {
 } from "./format";
 import { useCacheCleanup, useCacheStats, useDiagnosticsExport } from "./useSettings";
 import { PrivacyPicker } from "./PrivacyPicker";
+import { ThemePicker } from "./ThemePicker";
 import { useClearProxy, useProxySettings, useSaveProxy } from "./useProxySettings";
 
 async function copyText(text: string): Promise<boolean> {
@@ -501,6 +502,8 @@ export function SettingsPage() {
       </header>
 
       <PrivacyPicker />
+
+      <ThemePicker />
 
       <ProxyCard />
       <CacheCard />

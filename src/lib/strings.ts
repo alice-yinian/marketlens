@@ -749,6 +749,22 @@ export const S = {
     title: "设置",
     subtitle: "网络代理 · 缓存管理 · 诊断导出 · 版本信息",
 
+    // 界面主题（全局）：日间 / 夜间 / 跟随系统
+    theme: {
+      title: "界面主题",
+      subtitle: "全局生效：日间 · 夜间 · 跟随系统",
+      system: "跟随系统",
+      systemDesc: "随操作系统的深色模式自动切换（默认）",
+      light: "日间",
+      lightDesc: "浅色背景，适合明亮环境",
+      dark: "夜间",
+      darkDesc: "深色背景，适合暗环境",
+      current: (label: string) => `当前：${label}`,
+      /** 跟随系统时补一句「实际是日间还是夜间」，否则用户没法知道现在到底哪一档 */
+      currentFollowed: (resolved: string) => `当前：跟随系统（实际：${resolved}）`,
+      saveFailed: "主题保存失败，请重试。",
+    },
+
     // 隐私等级（全局）：实盘 / 复盘 / 行情三条管线都读它
     privacy: {
       title: "隐私等级",
