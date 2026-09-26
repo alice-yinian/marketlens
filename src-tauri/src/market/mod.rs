@@ -4,6 +4,7 @@ pub mod indicators;
 pub mod live;
 pub mod reconstruct;
 pub mod regime;
+pub mod series;
 
 /// 单根 K 线。已从 OKX 的字符串数组解析为数值。
 #[derive(Debug, Clone, Copy, PartialEq)]

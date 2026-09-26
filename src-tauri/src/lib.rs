@@ -66,7 +66,7 @@ pub fn run() {
             app.manage(client);
 
             app.manage(vault::Vault::new(&handle)?);
-            app.manage(review::ReviewRegistry::new());
+            app.manage(fetch::registry::FetchRegistry::new());
 
             Ok(())
         })
@@ -77,6 +77,11 @@ pub fn run() {
             commands::network::proxy_get,
             commands::network::proxy_set,
             commands::network::proxy_test,
+            commands::kline::kline_bars,
+            commands::kline::kline_plan,
+            commands::kline::kline_fetch,
+            commands::kline::kline_cancel,
+            commands::kline::kline_build,
             commands::live::live_refresh,
             commands::live::watchlist_get,
             commands::vault::vault_status,
@@ -189,14 +194,17 @@ mod tests {
     use ts_rs::{Config, TS};
 
     use crate::commands::account::WatchlistCandidate;
+    use crate::commands::kline::BarOption;
     use crate::commands::network::{ProxyProbe, ProxySettings};
     use crate::commands::system::BootstrapState;
     use crate::commands::vault::VaultStatus;
     use crate::credentials::{CredentialMeta, CredentialProbe};
     use crate::fetch::executor::{ExecutionReport, Progress, SeriesReport, SeriesStatus};
     use crate::fetch::plan::{AvailabilityNote, FetchPlan, SeriesKind, SeriesPlan};
+    use crate::fetch::plan::{KlineBarPlan, KlinePlan};
     use crate::market::live::{LiveSnapshot, MarketState};
     use crate::market::regime::{Crowding, Regime, TrendRegime, VolRegime};
+    use crate::market::series::{IndicatorKind, IndicatorSpec};
     use crate::position::history::{ClosedPosition, RegimeSnapshot};
     use crate::position::merge::MergeReport;
     use crate::position::stats::{ReviewStats, StatGroup};
@@ -311,6 +319,11 @@ mod tests {
             ReviewContext,
             ProxySettings,
             ProxyProbe,
+            KlinePlan,
+            KlineBarPlan,
+            BarOption,
+            IndicatorKind,
+            IndicatorSpec,
         );
 
         let mut output = String::from(

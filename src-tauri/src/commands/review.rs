@@ -4,16 +4,14 @@ use serde::Deserialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::error::{AppError, AppResult};
+use crate::fetch::executor::PROGRESS_EVENT;
 use crate::fetch::executor::{self, ExecutionReport, Progress};
 use crate::fetch::plan::{self, FetchPlan, MAX_RANGE_MS};
+use crate::fetch::registry::FetchRegistry;
 use crate::okx::client::OkxClient;
-use crate::review::ReviewRegistry;
 use crate::settings;
 use crate::storage::Db;
 use crate::vault::Vault;
-
-/// 进度事件名。前端监听它来推进进度条。
-pub const PROGRESS_EVENT: &str = "fetch://progress";
 
 /// `review_plan` 的入参。
 #[derive(Debug, Deserialize)]
@@ -35,7 +33,7 @@ pub struct PlanRequest {
 #[tauri::command]
 pub async fn review_plan(
     db: State<'_, Db>,
-    registry: State<'_, ReviewRegistry>,
+    registry: State<'_, FetchRegistry>,
     request: PlanRequest,
 ) -> AppResult<FetchPlan> {
     if request.to <= request.from {
@@ -51,7 +49,10 @@ pub async fn review_plan(
     };
 
     let bar = request.bar.unwrap_or_else(|| "1H".to_string());
-    if plan::bar_millis(&bar).is_none() {
+    // 用白名单而不是 `bar_millis`：后者是「数字 + m/H/D/W」的泛匹配，
+    // 会放行 `5H`、`100D` 这类 OKX 不接受的组合，而错误要到联网取数时才暴露
+    // （报的还是含糊的 `51000 Parameter bar error`）。
+    if !plan::is_supported_bar(&bar) {
         return Err(AppError::Config(format!("不支持的 K 线粒度：{bar}")));
     }
 
@@ -62,7 +63,7 @@ pub async fn review_plan(
         &bar,
         crate::storage::now_ms(),
     );
-    registry.register(plan.clone());
+    registry.register_review(plan.clone());
     Ok(plan)
 }
 
@@ -78,10 +79,10 @@ pub async fn review_fetch(
     app: AppHandle,
     client: State<'_, OkxClient>,
     db: State<'_, Db>,
-    registry: State<'_, ReviewRegistry>,
+    registry: State<'_, FetchRegistry>,
     plan_id: String,
 ) -> AppResult<ExecutionReport> {
-    let plan = registry.plan(&plan_id)?;
+    let plan = registry.review_plan(&plan_id)?;
     let cancel = registry.begin(&plan_id);
 
     tracing::info!(
@@ -121,10 +122,7 @@ pub async fn review_fetch(
 /// 返回 `true` 表示确实有一个正在执行的计划被取消；`false` 表示它已经结束了。
 /// 参数名的 `rename_all` 见 `review_fetch` 的说明。
 #[tauri::command(rename_all = "snake_case")]
-pub async fn review_cancel(
-    registry: State<'_, ReviewRegistry>,
-    plan_id: String,
-) -> AppResult<bool> {
+pub async fn review_cancel(registry: State<'_, FetchRegistry>, plan_id: String) -> AppResult<bool> {
     Ok(registry.cancel(&plan_id))
 }
 

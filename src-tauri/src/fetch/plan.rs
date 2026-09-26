@@ -6,6 +6,7 @@
 use serde::Serialize;
 use ts_rs::TS;
 
+use crate::error::{AppError, AppResult};
 use crate::okx::endpoints::{RateGroup, public};
 
 /// 单次 K 线分页请求的最大条数（实测 `limit=100` 可用）。
@@ -178,6 +179,45 @@ pub fn bar_millis(bar: &str) -> Option<i64> {
     Some(value * unit_ms)
 }
 
+/// 行情页支持的 K 线粒度白名单：(取值, 中文标签)。
+///
+/// **为什么要有白名单**：`bar_millis` 是「数字 + m/H/D/W」的泛匹配，它会放行
+/// `"5H"`、`"100D"` 这类 OKX 根本不接受的组合——而错误要等到联网取数时才暴露，
+/// 报的还是含糊的 `51000 Parameter bar error`。在这里先拒掉，报错才能指向真正的问题。
+///
+/// **为什么不支持月线（`1M` / `3M`）**：`bar_millis` 手里的单位只有 m/H/D/W，
+/// 而月份长度不固定（28~31 天）——换算成固定毫秒就是撒谎。与其给一个近似值，
+/// 不如明确不支持（界面里也不出现）。
+pub const CANDLE_BARS: &[(&str, &str)] = &[
+    ("1m", "1 分钟"),
+    ("3m", "3 分钟"),
+    ("5m", "5 分钟"),
+    ("15m", "15 分钟"),
+    ("30m", "30 分钟"),
+    ("1H", "1 小时"),
+    ("2H", "2 小时"),
+    ("4H", "4 小时"),
+    ("6H", "6 小时"),
+    ("12H", "12 小时"),
+    ("1D", "日线"),
+    ("2D", "2 日线"),
+    ("3D", "3 日线"),
+    ("1W", "周线"),
+];
+
+/// 该粒度是否受支持（白名单，不是 `bar_millis` 的泛匹配）。
+pub fn is_supported_bar(bar: &str) -> bool {
+    CANDLE_BARS.iter().any(|(value, _)| *value == bar)
+}
+
+/// 粒度的中文标签。未知粒度原样返回——不编造一个看起来很像的标签。
+pub fn bar_label(bar: &str) -> String {
+    CANDLE_BARS
+        .iter()
+        .find(|(value, _)| *value == bar)
+        .map_or_else(|| bar.to_string(), |(_, label)| (*label).to_string())
+}
+
 /// 展开采集计划。**不联网。**
 pub fn expand(from: i64, to: i64, inst_ids: &[String], bar: &str, now: i64) -> FetchPlan {
     let mut warnings = Vec::new();
@@ -300,6 +340,227 @@ pub fn expand(from: i64, to: i64, inst_ids: &[String], bar: &str, now: i64) -> F
         est_duration_ms,
         warnings,
     }
+}
+
+/// 行情页单个周期的最大根数。
+///
+/// 直接乘进 token：一根 K 线约 6 个数字，200 根 ≈ 1.2k token，
+/// 500 根已经把一份提示词推到「贵且 AI 容易只读开头」的量级。
+pub const MAX_CANDLES_PER_BAR: usize = 500;
+
+/// 单次行情计划的根数总上限（所有周期之和），≈ 15 页。
+///
+/// 设它的目的是让「点一次要等多久」保持可预期——与复盘把请求数收敛在
+/// 一个数量级是同一个考虑（见 `BUSY_PLAN_REQUESTS`）。
+pub const MAX_TOTAL_CANDLES: usize = 1_500;
+
+/// 单次行情计划最多几个周期。
+pub const MAX_BARS_PER_PLAN: usize = 6;
+
+/// 每根 K 线（含逐根指标列）大约占多少 token。
+///
+/// 实测来源：黄金测试里「300 行 × 2 个指标列」渲染出约 10.2k token，
+/// 即每行约 34 token；这里向上取 40 留余量（列更多时每行更宽）。
+pub const APPROX_TOKENS_PER_ROW: usize = 40;
+
+/// 超过这个预估 token 数就在计划阶段提醒用户。
+///
+/// 与 `BUSY_PLAN_REQUESTS` 同一个思路：把「要花多少」在联网之前讲清楚。
+pub const BUSY_PROMPT_TOKENS: usize = 20_000;
+
+/// 行情页的一个周期：最近多少根、覆盖哪个区间。
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct KlineBarPlan {
+    pub bar: String,
+    /// 中文标签（如 `1 小时`），界面与提示词都用它
+    pub label: String,
+    /// 请求的根数
+    pub candle_count: usize,
+    #[ts(type = "number")]
+    pub from: i64,
+    #[ts(type = "number")]
+    pub to: i64,
+    pub est_pages: usize,
+    /// 指向 `series` 里对应的那条 K 线序列（执行与续传都用它）
+    pub series_key: String,
+}
+
+/// 行情页的取数计划：**单标的 × 多周期**，每个周期各有自己的时间区间。
+///
+/// 与 [`FetchPlan`] 分开而不是复用，是刻意的：`FetchPlan` 只有一个
+/// `from` / `to` / `bar`，而这里每个周期都要「最近 N 根」——不同周期的时间区间
+/// 本来就不同（200 根 1H 是 8 天，200 根 1D 是 200 天）。硬塞进 `FetchPlan`
+/// 就得让那几个字段说谎，而界面会把它们显示给用户。
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export_to = "types.ts")]
+pub struct KlinePlan {
+    pub id: String,
+    pub inst_id: String,
+    pub bars: Vec<KlineBarPlan>,
+    /// 执行器消费的序列清单（**只有价格 K 线**：行情页不做基差重建）
+    pub series: Vec<SeriesPlan>,
+    pub est_requests: usize,
+    #[ts(type = "number")]
+    pub est_duration_ms: u64,
+    /// 提示词长度的量级预估（**不含指标列**：指标是 build 阶段的参数，
+    /// 计划阶段还不知道）。界面据此在联网前给出「这一份大概多长」。
+    ///
+    /// 用「根数 × 每行 token」估算，而不是等生成完再算——那时请求已经花掉了。
+    pub est_tokens: usize,
+    pub warnings: Vec<AvailabilityNote>,
+}
+
+impl KlinePlan {
+    /// 全部周期的预计根数之和。
+    pub fn total_candles(&self) -> usize {
+        self.bars.iter().map(|item| item.candle_count).sum()
+    }
+}
+
+/// 展开行情取数计划。**不联网。**
+///
+/// 与 [`expand`] 的区别不只是「只要 K 线」，还有**区间方向**：复盘是用户给定
+/// 起止时间，行情页给定的是「最近 N 根」——所以这里由 `bar_ms × count`
+/// 反推区间，而不是接受一个 `from`。
+pub fn expand_kline(
+    inst_id: &str,
+    bars: &[String],
+    candle_count: usize,
+    now: i64,
+) -> AppResult<KlinePlan> {
+    if inst_id.trim().is_empty() {
+        return Err(AppError::Config("必须先选择标的".to_string()));
+    }
+
+    // 去重但保留用户的选择顺序：界面是多选框，重复项没有意义，
+    // 但打乱顺序会让「第 1 个周期」这类文案对不上。
+    let mut unique: Vec<&String> = Vec::new();
+    for bar in bars {
+        if !unique.contains(&bar) {
+            unique.push(bar);
+        }
+    }
+    if unique.is_empty() {
+        return Err(AppError::Config("至少需要选择 1 个周期".to_string()));
+    }
+    if unique.len() > MAX_BARS_PER_PLAN {
+        return Err(AppError::Config(format!(
+            "最多选择 {MAX_BARS_PER_PLAN} 个周期，当前 {} 个",
+            unique.len()
+        )));
+    }
+
+    if candle_count == 0 {
+        return Err(AppError::Config("K 线根数至少为 1".to_string()));
+    }
+    if candle_count > MAX_CANDLES_PER_BAR {
+        return Err(AppError::Config(format!(
+            "每个周期最多 {MAX_CANDLES_PER_BAR} 根，当前 {candle_count} 根"
+        )));
+    }
+    let bar_count = unique.len();
+    let total = candle_count * bar_count;
+    if total > MAX_TOTAL_CANDLES {
+        return Err(AppError::Config(format!(
+            "所有周期的根数之和最多 {MAX_TOTAL_CANDLES} 根（当前 {total} 根）：\
+             减少周期数或降低每周期根数。根数会直接乘进提示词长度与等待时间"
+        )));
+    }
+
+    let mut bar_plans = Vec::with_capacity(unique.len());
+    let mut series = Vec::with_capacity(unique.len());
+
+    for bar in unique {
+        if !is_supported_bar(bar) {
+            return Err(AppError::Config(format!(
+                "不支持的 K 线粒度：{bar}（可用：{}）",
+                CANDLE_BARS
+                    .iter()
+                    .map(|(value, _)| *value)
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            )));
+        }
+
+        // 白名单保证了这里有值；用 ok_or_else 而不是 unwrap 是为了将来
+        // 有人往白名单里加了月线时，这里会明确报错而不是 panic。
+        let bar_ms = bar_millis(bar)
+            .ok_or_else(|| AppError::Config(format!("无法换算粒度的时长：{bar}")))?;
+
+        let to = now;
+        let from = to - bar_ms * candle_count as i64;
+        let span = (to - from).max(0);
+        let est_pages = pages_for(span, bar_ms * CANDLE_PAGE as i64);
+        let label = bar_label(bar);
+        let series_key = format!(
+            "{}|{inst_id}|{bar}|{from}|{to}",
+            SeriesKind::Candles.key_prefix()
+        );
+
+        series.push(SeriesPlan {
+            key: series_key.clone(),
+            label: format!("{inst_id} {label} K 线"),
+            kind: SeriesKind::Candles,
+            inst_id: Some(inst_id.to_string()),
+            ccy: None,
+            priority: 1,
+            est_pages,
+        });
+        bar_plans.push(KlineBarPlan {
+            bar: bar.clone(),
+            label,
+            candle_count,
+            from,
+            to,
+            est_pages,
+            series_key,
+        });
+    }
+
+    let est_requests: usize = series.iter().map(|plan| plan.est_pages).sum();
+    let est_duration_ms = estimate_duration_ms(&series);
+    let est_tokens = total * APPROX_TOKENS_PER_ROW;
+
+    let plan = KlinePlan {
+        // 计划 id 只用「与用户选择有关」的字段：`from` 由 `now` 反推，
+        // 把它算进哈希会让同一份选择每秒产生一个新 id，注册表就会不断堆积。
+        id: kline_plan_id(inst_id, &bar_plans, candle_count),
+        inst_id: inst_id.to_string(),
+        bars: bar_plans,
+        series,
+        est_requests,
+        est_duration_ms,
+        est_tokens,
+        warnings: Vec::new(),
+    };
+
+    // 提示词长度预警。
+    //
+    // `APPROX_TOKENS_PER_ROW` 不是拍脑袋：黄金测试实测「300 行 × 2 个指标列」
+    // 渲染出约 10.2k token，即每行约 34 token（向上取 40 留余量）。
+    // 逐根附列的表达力就是拿 token 换来的，用户有权在**等待联网取数之前**
+    // 就知道自己要花多少——等到提示词生成完再发现太长，那批请求已经花掉了。
+    let mut warnings = Vec::new();
+    if plan.est_tokens > BUSY_PROMPT_TOKENS {
+        warnings.push(AvailabilityNote {
+            metric: "提示词长度".to_string(),
+            reason: format!(
+                "本次共 {} 根 K 线，提示词预计约 {} token（不含指标列）；\
+                 建议减少周期数或降低每周期根数（每根约 {APPROX_TOKENS_PER_ROW} token）",
+                plan.total_candles(),
+                plan.est_tokens
+            ),
+        });
+    }
+
+    Ok(KlinePlan { warnings, ..plan })
+}
+
+fn kline_plan_id(inst_id: &str, bars: &[KlineBarPlan], candle_count: usize) -> String {
+    let mut parts = vec![inst_id.to_string(), candle_count.to_string()];
+    parts.extend(bars.iter().map(|item| item.bar.clone()));
+    format!("kline-{:x}", fnv1a(parts.join("|").as_bytes()))
 }
 
 /// 估算总耗时：按限流分组分别累加「请求数 ÷ 配额 × 窗口」。
@@ -558,5 +819,197 @@ mod tests {
             "18 个请求不该估算到 10 秒以上：{}",
             plan.est_duration_ms
         );
+    }
+
+    // ---------------------------------------------------------------- 行情计划
+
+    #[test]
+    fn kline_plan_covers_the_last_n_candles_of_each_bar() {
+        let now = 1_800_000_000_000;
+        let bars = vec!["1H".to_string(), "1D".to_string()];
+        let plan = expand_kline("BTC-USDT-SWAP", &bars, 200, now).expect("应能展开");
+
+        assert_eq!(plan.inst_id, "BTC-USDT-SWAP");
+        assert_eq!(plan.bars.len(), 2);
+
+        let hourly = &plan.bars[0];
+        assert_eq!(hourly.bar, "1H");
+        assert_eq!(hourly.label, "1 小时");
+        assert_eq!(hourly.to, now);
+        assert_eq!(hourly.from, now - 200 * HOUR, "1H 的 200 根 = 200 小时");
+        assert_eq!(hourly.est_pages, 2, "200 根 / 100 = 2 页");
+
+        let daily = &plan.bars[1];
+        assert_eq!(
+            daily.from,
+            now - 200 * DAY,
+            "同一个根数在不同周期上区间不同"
+        );
+        assert_eq!(daily.est_pages, 2);
+        assert_ne!(hourly.from, daily.from, "各周期必须有各自的区间");
+
+        // 只要价格线：行情页不做基差重建，标记价/指数价不该出现在计划里
+        assert_eq!(plan.series.len(), 2);
+        assert!(plan.series.iter().all(|s| s.kind == SeriesKind::Candles));
+        assert_eq!(plan.est_requests, 4);
+        assert_eq!(plan.total_candles(), 400);
+
+        // 序列 key 必须编码区间：执行器与续传都靠它
+        assert_eq!(
+            plan.series[0].key,
+            format!("candles|BTC-USDT-SWAP|1H|{}|{}", hourly.from, hourly.to)
+        );
+        assert_eq!(plan.bars[0].series_key, plan.series[0].key);
+    }
+
+    /// 计划 id 不能把 `from` 算进去：它由 `now` 反推，否则同一份选择每秒
+    /// 都会产生一个新 id，注册表会不断堆积。
+    #[test]
+    fn kline_plan_id_is_stable_across_time() {
+        let bars = vec!["1H".to_string()];
+        let first = expand_kline("BTC-USDT-SWAP", &bars, 200, 1_800_000_000_000).expect("应能展开");
+        let later = expand_kline("BTC-USDT-SWAP", &bars, 200, 1_800_000_600_000).expect("应能展开");
+
+        assert_eq!(first.id, later.id, "同一份选择应得到同一个计划 id");
+        assert_ne!(first.bars[0].from, later.bars[0].from, "但区间随 now 前移");
+    }
+
+    /// 月线必须被拒：`bar_millis` 只有 m/H/D/W，月份长度不固定，
+    /// 换算成固定毫秒就是撒谎。这里守住「不支持就说清楚」。
+    #[test]
+    fn kline_plan_rejects_month_bars() {
+        for bar in ["1M", "3M"] {
+            let err = expand_kline("BTC-USDT-SWAP", &[bar.to_string()], 200, 0)
+                .expect_err("月线必须被拒绝");
+            assert!(
+                err.to_string().contains("不支持的 K 线粒度"),
+                "错误信息要指出是不支持的粒度：{err}"
+            );
+        }
+    }
+
+    /// `bar_millis` 是泛匹配，会放行 `5H` / `100D` 这类 OKX 不接受的组合。
+    /// 白名单的意义就是在这里拦住它们，而不是等到联网时报 `51000`。
+    #[test]
+    fn kline_plan_rejects_bars_okx_does_not_accept() {
+        for bar in ["5H", "100D", "bogus", "", "1"] {
+            assert!(
+                expand_kline("BTC-USDT-SWAP", &[bar.to_string()], 200, 0).is_err(),
+                "{bar} 不该被接受"
+            );
+        }
+    }
+
+    #[test]
+    fn kline_plan_enforces_candle_limits() {
+        let bars = vec!["1H".to_string()];
+
+        assert!(
+            expand_kline("BTC-USDT-SWAP", &bars, 0, 0).is_err(),
+            "根数为 0 应被拒绝"
+        );
+        assert!(
+            expand_kline("BTC-USDT-SWAP", &bars, MAX_CANDLES_PER_BAR + 1, 0).is_err(),
+            "超过单周期上限应被拒绝"
+        );
+        assert!(
+            expand_kline("BTC-USDT-SWAP", &bars, MAX_CANDLES_PER_BAR, 0).is_ok(),
+            "刚好到单周期上限应通过"
+        );
+
+        // 2 个周期 × 500 根 = 1000 ≤ 1500 → 通过
+        let two = vec!["1H".to_string(), "4H".to_string()];
+        assert!(expand_kline("BTC-USDT-SWAP", &two, MAX_CANDLES_PER_BAR, 0).is_ok());
+
+        // 4 个周期 × 500 根 = 2000 > 1500 → 拒绝，且要说清怎么减
+        let four = vec![
+            "1H".to_string(),
+            "4H".to_string(),
+            "1D".to_string(),
+            "1W".to_string(),
+        ];
+        let err = expand_kline("BTC-USDT-SWAP", &four, MAX_CANDLES_PER_BAR, 0)
+            .expect_err("总根数超限应被拒绝");
+        let message = err.to_string();
+        assert!(message.contains("减少周期数"), "要说清怎么减：{message}");
+    }
+
+    #[test]
+    fn kline_plan_rejects_empty_or_too_many_bars() {
+        assert!(
+            expand_kline("BTC-USDT-SWAP", &[], 200, 0).is_err(),
+            "一个周期都不选应被拒绝"
+        );
+
+        let too_many: Vec<String> = CANDLE_BARS
+            .iter()
+            .take(MAX_BARS_PER_PLAN + 1)
+            .map(|(bar, _)| (*bar).to_string())
+            .collect();
+        assert!(expand_kline("BTC-USDT-SWAP", &too_many, 10, 0).is_err());
+
+        assert!(
+            expand_kline("", &["1H".to_string()], 200, 0).is_err(),
+            "没选标的应被拒绝"
+        );
+    }
+
+    #[test]
+    fn kline_plan_dedupes_bars_but_keeps_order() {
+        let bars = vec!["4H".to_string(), "1H".to_string(), "4H".to_string()];
+        let plan = expand_kline("BTC-USDT-SWAP", &bars, 100, 0).expect("应能展开");
+
+        assert_eq!(plan.bars.len(), 2, "重复的周期只算一次");
+        assert_eq!(plan.bars[0].bar, "4H", "保留用户选择的顺序");
+        assert_eq!(plan.bars[1].bar, "1H");
+    }
+
+    /// 提示词长度要在**联网之前**就告知：等到生成完才发现太长，那批请求已经花掉了。
+    #[test]
+    fn kline_plan_warns_when_the_prompt_would_be_large() {
+        let small = expand_kline("BTC-USDT-SWAP", &["1H".to_string()], 200, 0).expect("应能展开");
+        assert!(
+            small.warnings.is_empty(),
+            "200 根不该预警：{:?}",
+            small.warnings
+        );
+
+        let big = expand_kline(
+            "BTC-USDT-SWAP",
+            &["1H".to_string(), "4H".to_string(), "1D".to_string()],
+            500,
+            0,
+        )
+        .expect("应能展开");
+
+        let warning = big
+            .warnings
+            .iter()
+            .find(|item| item.metric.contains("提示词长度"))
+            .expect("1500 根必须提前预警");
+        assert!(
+            warning.reason.contains("减少周期数"),
+            "要说清怎么减：{}",
+            warning.reason
+        );
+        assert!(
+            warning.reason.contains("token"),
+            "要给出量级而不是含糊其辞：{}",
+            warning.reason
+        );
+    }
+
+    /// 每个受支持的粒度都必须能算出区间与页数——白名单里混进一个
+    /// `bar_millis` 不认的取值，会让整个计划在运行时报错。
+    #[test]
+    fn every_whitelisted_bar_is_convertible() {
+        for (bar, label) in CANDLE_BARS {
+            assert!(bar_millis(bar).is_some(), "{bar} 无法换算时长");
+            assert_eq!(&bar_label(bar), label, "{bar} 的标签不一致");
+            assert!(
+                expand_kline("BTC-USDT-SWAP", &[(*bar).to_string()], 100, 0).is_ok(),
+                "{bar} 应能展开"
+            );
+        }
     }
 }

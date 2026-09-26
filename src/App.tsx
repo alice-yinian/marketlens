@@ -14,6 +14,7 @@ import { useState } from "react";
 
 import { AccountPage } from "./features/account/AccountPage";
 import { ErrorPanel } from "./features/account/ErrorPanel";
+import { KlinePage } from "./features/kline/KlinePage";
 import { LivePage } from "./features/live/LivePage";
 import { OnboardingPage } from "./features/onboarding/OnboardingPage";
 import { PromptPage } from "./features/prompt/PromptPage";
@@ -54,10 +55,11 @@ function VersionFooter() {
   );
 }
 
-type Tab = "live" | "account" | "review" | "prompt" | "settings";
+type Tab = "live" | "kline" | "account" | "review" | "prompt" | "settings";
 
 const TABS: readonly { id: Tab; label: string }[] = [
   { id: "live", label: S.nav.live },
+  { id: "kline", label: S.nav.kline },
   { id: "account", label: S.nav.account },
   { id: "review", label: S.nav.review },
   { id: "prompt", label: S.nav.prompt },
@@ -81,6 +83,7 @@ function MainShell({
   // 仍然不会挂载，所以启动时不会偷偷多发请求。
   const [visited, setVisited] = useState<Record<Tab, boolean>>(() => ({
     live: tab === "live",
+    kline: tab === "kline",
     account: tab === "account",
     review: tab === "review",
     prompt: tab === "prompt",
@@ -122,6 +125,7 @@ function MainShell({
       </nav>
       <div className="flex-1">
         {panel("live", <LivePage />)}
+        {panel("kline", <KlinePage />)}
         {panel("account", <AccountPage onConfigure={onConfigure} />)}
         {panel("review", <ReviewPage onConfigure={onConfigure} />)}
         {panel("prompt", <PromptPage />)}

@@ -76,8 +76,16 @@ function Group({
   );
 }
 
+/**
+ * 模板库：内置在前、用户在后，按模板类型分组展示。
+ *
+ * `kinds` 由调用方给出要展示哪几类：提示词页只展示实盘 / 复盘（它不生成行情提示词），
+ * 行情页只展示行情。不给默认值——默认值会让「把行情模板混进提示词页」这种错误
+ * 变成静默行为，而不是编译期就看得见的调用参数。
+ */
 export function TemplateLibrary({
   templates,
+  kinds,
   loading,
   error,
   onRetry,
@@ -85,15 +93,13 @@ export function TemplateLibrary({
   onSelect,
 }: {
   templates: PromptTemplate[];
+  kinds: readonly TemplateKind[];
   loading: boolean;
   error: unknown;
   onRetry: () => void;
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
-  const live = templates.filter((template) => template.kind === "live");
-  const review = templates.filter((template) => template.kind === "review");
-
   return (
     <section className="flex flex-col gap-3 rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
       <h2 className="text-sm font-medium text-neutral-200">{S.prompt.templates.title}</h2>
@@ -115,12 +121,18 @@ export function TemplateLibrary({
         <p className="text-xs text-neutral-500">{S.prompt.templates.empty}</p>
       ) : (
         <>
-          {live.length > 0 ? (
-            <Group kind="live" templates={live} selectedId={selectedId} onSelect={onSelect} />
-          ) : null}
-          {review.length > 0 ? (
-            <Group kind="review" templates={review} selectedId={selectedId} onSelect={onSelect} />
-          ) : null}
+          {kinds.map((kind) => {
+            const group = templates.filter((template) => template.kind === kind);
+            return group.length === 0 ? null : (
+              <Group
+                key={kind}
+                kind={kind}
+                templates={group}
+                selectedId={selectedId}
+                onSelect={onSelect}
+              />
+            );
+          })}
           <p className="text-[11px] text-neutral-600">{S.prompt.templates.builtinNote}</p>
         </>
       )}

@@ -31,6 +31,56 @@ use crate::storage::Db;
 /// 默认并发上限。
 pub const DEFAULT_CONCURRENCY: usize = 4;
 
+/// 采集进度事件名。
+///
+/// 放在执行器旁边而不是某个命令文件里：它由执行器产出的 [`Progress`] 驱动，
+/// 而复盘与行情**共用同一条进度通道**（前端只监听这一个事件名）。
+/// 常量若挂在某一个功能下，另一个功能引用它就会形成毫无道理的依赖。
+pub const PROGRESS_EVENT: &str = "fetch://progress";
+
+/// 执行器需要的最小计划视图。
+///
+/// 为什么不直接收 `&FetchPlan`：行情页的计划是「单标的 × 多周期」，
+/// 每个周期各有自己的时间区间，塞进 `FetchPlan` 的单个 `from`/`to`/`bar`
+/// 就得让那几个字段说谎——而界面会把它们显示给用户。
+///
+/// 两种计划共用同一条执行路径，也就是共用「序列内顺序分页、序列间并发、
+/// 已收盘数据永久缓存、进度上报、序列级续传、可取消」这一整套行为。
+pub trait ExecutablePlan: Send + Sync {
+    fn plan_id(&self) -> &str;
+    fn series(&self) -> &[SeriesPlan];
+    /// 预估请求总数（进度条的分母）
+    fn est_requests(&self) -> usize;
+}
+
+impl ExecutablePlan for FetchPlan {
+    fn plan_id(&self) -> &str {
+        &self.id
+    }
+
+    fn series(&self) -> &[SeriesPlan] {
+        &self.series
+    }
+
+    fn est_requests(&self) -> usize {
+        self.est_requests
+    }
+}
+
+impl ExecutablePlan for crate::fetch::plan::KlinePlan {
+    fn plan_id(&self) -> &str {
+        &self.id
+    }
+
+    fn series(&self) -> &[SeriesPlan] {
+        &self.series
+    }
+
+    fn est_requests(&self) -> usize {
+        self.est_requests
+    }
+}
+
 /// 进度快照。
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export_to = "types.ts")]
@@ -86,7 +136,7 @@ struct ProgressState {
 /// 进度上报通道。把「改状态」与「通知界面」绑在一起，
 /// 避免出现「状态更新了但界面没收到」这种半吊子。
 struct ProgressSink<'a> {
-    plan: &'a FetchPlan,
+    plan: &'a dyn ExecutablePlan,
     state: &'a Mutex<ProgressState>,
     /// 必须带 `Send + Sync`：这个回调会被并发执行的序列共用，
     /// 而 Tauri 命令的 future 本身要求 `Send`。
@@ -100,11 +150,11 @@ impl ProgressSink<'_> {
             state.done_requests += 1;
             state.current = label.to_string();
             Progress {
-                plan_id: self.plan.id.clone(),
+                plan_id: self.plan.plan_id().to_string(),
                 done_series: state.done_series,
-                total_series: self.plan.series.len(),
+                total_series: self.plan.series().len(),
                 done_requests: state.done_requests,
-                total_requests: self.plan.est_requests,
+                total_requests: self.plan.est_requests(),
                 current: state.current.clone(),
             }
         };
@@ -116,11 +166,11 @@ impl ProgressSink<'_> {
             let mut state = self.state.lock().unwrap_or_else(|err| err.into_inner());
             state.done_series += 1;
             Progress {
-                plan_id: self.plan.id.clone(),
+                plan_id: self.plan.plan_id().to_string(),
                 done_series: state.done_series,
-                total_series: self.plan.series.len(),
+                total_series: self.plan.series().len(),
                 done_requests: state.done_requests,
-                total_requests: self.plan.est_requests,
+                total_requests: self.plan.est_requests(),
                 current: state.current.clone(),
             }
         };
@@ -132,7 +182,7 @@ impl ProgressSink<'_> {
 pub async fn run(
     client: &OkxClient,
     db: &Db,
-    plan: &FetchPlan,
+    plan: &dyn ExecutablePlan,
     cancel: Arc<AtomicBool>,
     notify: &(dyn Fn(Progress) + Send + Sync),
 ) -> AppResult<ExecutionReport> {
@@ -152,7 +202,7 @@ pub async fn run(
     // 因此先排队的序列会先拿到许可 —— 优先级顺序得以保持。
     let semaphore = Arc::new(Semaphore::new(DEFAULT_CONCURRENCY));
 
-    let futures = plan.series.iter().map(|series| {
+    let futures = plan.series().iter().map(|series| {
         let permit = semaphore.clone();
         let cancel = cancel.clone();
         let sink = &sink;
@@ -166,7 +216,7 @@ pub async fn run(
 
     // 报告顺序按计划顺序（并发完成顺序是乱的，直接返回会让界面每次都不一样）
     let order: std::collections::HashMap<&str, usize> = plan
-        .series
+        .series()
         .iter()
         .enumerate()
         .map(|(index, item)| (item.key.as_str(), index))
@@ -184,7 +234,7 @@ pub async fn run(
     };
 
     Ok(ExecutionReport {
-        plan_id: plan.id.clone(),
+        plan_id: plan.plan_id().to_string(),
         series,
         done_requests,
         elapsed_ms: started.elapsed().as_millis() as i64,

@@ -19,6 +19,8 @@ pub enum TemplateKind {
     Live,
     /// 复盘：历史仓位 + 统计
     Review,
+    /// 行情：单标的 × 多周期的 K 线与逐根指标（**只有公开行情，不含账户**）
+    Market,
 }
 
 impl TemplateKind {
@@ -26,6 +28,7 @@ impl TemplateKind {
         match self {
             TemplateKind::Live => "live",
             TemplateKind::Review => "review",
+            TemplateKind::Market => "market",
         }
     }
 
@@ -33,6 +36,7 @@ impl TemplateKind {
         match raw {
             "live" => Some(TemplateKind::Live),
             "review" => Some(TemplateKind::Review),
+            "market" => Some(TemplateKind::Market),
             _ => None,
         }
     }
@@ -83,6 +87,20 @@ const BUILTINS: &[(&str, &str, &str, TemplateKind, &str)] = &[
         TemplateKind::Review,
         include_str!("../../templates/review_lesson.md"),
     ),
+    (
+        "kline_structure",
+        "K 线结构分析",
+        "原始 K 线 + 指标，判断结构、关键位与量价（支持多周期）",
+        TemplateKind::Market,
+        include_str!("../../templates/kline_structure.md"),
+    ),
+    (
+        "kline_volatility",
+        "波动与风险体检",
+        "围绕 ATR%、已实现波动率判断波动高低与异常",
+        TemplateKind::Market,
+        include_str!("../../templates/kline_volatility.md"),
+    ),
 ];
 
 /// 全部内置模板。
@@ -132,14 +150,38 @@ mod golden {
         context::review(&crate::test_fixtures::review_context(), level).context
     }
 
+    /// 行情夹具。`series_count` 控制几个周期——**一套模板要覆盖 1..N 个周期**，
+    /// 所以黄金测试两种都要跑。
+    fn market_fixture(level: PrivacyLevel, series_count: usize) -> serde_json::Value {
+        let mut series = crate::test_fixtures::market_series();
+        series.truncate(series_count.clamp(1, series.len()));
+        context::market(
+            "BTC-USDT-SWAP",
+            &series,
+            level,
+            vec!["示例警告：本次采集有 1 条序列失败".to_string()],
+            1_700_000_000_000,
+        )
+        .context
+    }
+
+    /// 按模板类型取夹具。
+    ///
+    /// 收敛到一处是刻意的：三处各自 `match` 的话，新增一类模板会同时弄坏三个测试，
+    /// 而每个测试都要单独改一遍。
+    fn fixture_for(kind: TemplateKind, level: PrivacyLevel) -> serde_json::Value {
+        match kind {
+            TemplateKind::Live => live_fixture(level),
+            TemplateKind::Review => review_fixture(level),
+            TemplateKind::Market => market_fixture(level, 2),
+        }
+    }
+
     #[test]
     fn every_builtin_renders_at_every_privacy_level() {
         for template in builtins() {
             for level in [PrivacyLevel::L0, PrivacyLevel::L1, PrivacyLevel::L2] {
-                let context = match template.kind {
-                    TemplateKind::Live => live_fixture(level),
-                    TemplateKind::Review => review_fixture(level),
-                };
+                let context = fixture_for(template.kind, level);
 
                 let output = render(&template.body, &context).unwrap_or_else(|err| {
                     panic!(
@@ -176,10 +218,7 @@ mod golden {
 
         for template in builtins() {
             for level in [PrivacyLevel::L1, PrivacyLevel::L2] {
-                let context = match template.kind {
-                    TemplateKind::Live => live_fixture(level),
-                    TemplateKind::Review => review_fixture(level),
-                };
+                let context = fixture_for(template.kind, level);
                 let output = render(&template.body, &context)
                     .unwrap_or_else(|err| panic!("{} 渲染失败：{err}", template.id));
 
@@ -200,10 +239,7 @@ mod golden {
     #[test]
     fn l2_output_contains_no_dollar_amounts() {
         for template in builtins() {
-            let context = match template.kind {
-                TemplateKind::Live => live_fixture(PrivacyLevel::L2),
-                TemplateKind::Review => review_fixture(PrivacyLevel::L2),
-            };
+            let context = fixture_for(template.kind, PrivacyLevel::L2);
             let output = render(&template.body, &context).expect("应能渲染");
 
             // 允许「$」出现在说明文字里（如权益量级区间 "$10k–$50k" 是刻意保留的量级信息），
@@ -250,13 +286,108 @@ mod golden {
         );
     }
 
+    /// 行情模板必须在 1 个周期与多个周期下**都能用同一份正文**——
+    /// 这是选择「一套模板遍历 `series`」而不是给单/多周期各写一套的原因。
+    #[test]
+    fn kline_templates_render_for_one_and_many_series() {
+        for id in ["kline_structure", "kline_volatility"] {
+            let template = builtin(id).expect("内置模板应存在");
+
+            for series_count in [1, 2] {
+                let context = market_fixture(PrivacyLevel::L0, series_count);
+                let output = render(&template.body, &context)
+                    .unwrap_or_else(|err| panic!("{id} 在 {series_count} 个周期下渲染失败：{err}"));
+
+                assert!(output.len() > 200, "{id} 输出过短，可能整段被跳过");
+                assert!(
+                    !output.contains("{{") && !output.contains("{%"),
+                    "{id} 留下了未渲染的标记"
+                );
+            }
+        }
+    }
+
+    /// 每一根 K 线都要进提示词。少渲染几行不会报错，只会让 AI 在缺一段的数据上给结论。
+    #[test]
+    fn kline_template_renders_every_candle_row() {
+        let context = market_fixture(PrivacyLevel::L0, 1);
+        let expected = crate::test_fixtures::market_series()[0].candle_count();
+        let output =
+            render(&builtin("kline_structure").expect("应存在").body, &context).expect("应能渲染");
+
+        // `table` 过滤器输出：表头 + 分隔行 + 每根一行
+        let table_lines = output.lines().filter(|line| line.starts_with("| ")).count();
+        assert_eq!(
+            table_lines,
+            expected + 2,
+            "表格行数应等于 K 线根数（{expected}）+ 表头 + 分隔行"
+        );
+    }
+
+    /// 样本不足的指标列必须在提示词里说清「哪一列、从第几根开始才有值」，
+    /// 否则 AI 会把 `—` 当成 0 或者整列忽略。
+    #[test]
+    fn kline_template_declares_unavailable_indicator_columns() {
+        let context = market_fixture(PrivacyLevel::L0, 2);
+        let output =
+            render(&builtin("kline_structure").expect("应存在").body, &context).expect("应能渲染");
+
+        assert!(output.contains("EMA200"), "应出现指标列名：{output}");
+        assert!(
+            output.contains("本列不可得"),
+            "整列不可得时必须显式声明：{output}"
+        );
+        assert!(
+            output.contains("样本不足"),
+            "头部不可得的列要说明前几根为 `—`：{output}"
+        );
+    }
+
+    /// 尚未收盘的那一根必须点出来。把它当成已定型的收盘价，
+    /// AI 会基于一根还在变的 K 线给出结论。
+    #[test]
+    fn kline_template_flags_the_unconfirmed_candle() {
+        let context = market_fixture(PrivacyLevel::L0, 1);
+        let output =
+            render(&builtin("kline_volatility").expect("应存在").body, &context).expect("应能渲染");
+
+        assert!(
+            output.contains("尚未收盘"),
+            "未收盘的最后一根必须标注：{output}"
+        );
+    }
+
+    /// 行情模板里不该出现任何账户字段——它只有公开行情。
+    #[test]
+    fn kline_templates_do_not_touch_account_fields() {
+        for id in ["kline_structure", "kline_volatility"] {
+            let template = builtin(id).expect("应存在");
+            assert!(
+                !template.body.contains("account.") && !template.body.contains("positions"),
+                "{id} 引用了账户字段，但行情上下文里没有它们"
+            );
+        }
+    }
+
     /// token 估算要能跑在所有模板上，且量级合理（内置模板应当是「能直接粘」的长度）。
     #[test]
     fn token_estimate_is_reasonable_for_builtins() {
         for template in builtins() {
+            // 行情模板要拿**小样本**来量正文长度：它的输出长度主要由用户选的根数
+            // 决定，而不是模板写得多啰嗦。用默认夹具（300 行）去卡 8000，
+            // 会把「数据多」误判成「模板长」——那正是这条测试要防的东西的反面。
             let context = match template.kind {
-                TemplateKind::Live => live_fixture(PrivacyLevel::L1),
-                TemplateKind::Review => review_fixture(PrivacyLevel::L1),
+                TemplateKind::Market => {
+                    context::market(
+                        "BTC-USDT-SWAP",
+                        &[crate::test_fixtures::market_series_of("1H", 30, &[20])],
+                        PrivacyLevel::L1,
+                        vec![],
+                        1_700_000_000_000,
+                    )
+                    .context
+                }
+                _ => fixture_for(template.kind, PrivacyLevel::L1),
             };
             let output = render(&template.body, &context).expect("应能渲染");
             let estimated = tokens::estimate(&output);

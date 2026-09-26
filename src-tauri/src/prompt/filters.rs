@@ -109,7 +109,7 @@ fn filter_ts(value: Value) -> Result<Value, Error> {
         return Ok(passthrough);
     }
     let millis = to_i64(&value)?;
-    Ok(Value::from(format_timestamp(millis, "%Y-%m-%d %H:%M")))
+    Ok(Value::from(format_timestamp(millis, TIMESTAMP_FORMAT)))
 }
 
 /// 毫秒时间戳 → 本地日期 `YYYY-MM-DD`。
@@ -345,7 +345,14 @@ pub fn format_pct(ratio: f64, precision: usize) -> String {
     format!("{:+.precision$}%", ratio * 100.0)
 }
 
-fn format_timestamp(millis: i64, format: &str) -> String {
+/// 时间戳的默认展示格式（与 `ts` 过滤器一致）。
+///
+/// 抽成常量是因为逐根表格**必须自己先把时间格格式化好**：`table` 过滤器
+/// 逐单元格渲染原始值，没法在格子里套过滤器。两处若各写一个格式串，
+/// 迟早会出现「同一个时间在正文与表格里长得不一样」。
+pub(crate) const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M";
+
+pub(crate) fn format_timestamp(millis: i64, format: &str) -> String {
     match chrono::DateTime::from_timestamp_millis(millis) {
         Some(utc) => utc.with_timezone(&chrono::Local).format(format).to_string(),
         None => format!("[时间戳越界：{millis}]"),

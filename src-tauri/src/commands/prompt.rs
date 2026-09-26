@@ -298,9 +298,12 @@ pub async fn prompt_build_review(
 
 /// 解析要用的模板：显式 `body`（编辑器预览）优先，否则按 id 查库、再查内置。
 ///
-/// `kind` 只在 `body` 分支用到：命令层已经知道自己在生成实盘还是复盘，
-/// 用它给「未保存的模板」一个正确的类型，否则复盘预览会因类型校验被误拒。
-async fn resolve_template(
+/// `kind` 只在 `body` 分支用到：命令层已经知道自己在生成哪一类提示词，
+/// 用它给「未保存的模板」一个正确的类型，否则类型校验会误拒。
+///
+/// 对 crate 内可见：行情命令复用同一条解析路径——「内置在前、用户在后、
+/// 内置 id 当作另存为」这些语义只能有一份实现。
+pub(crate) async fn resolve_template(
     db: &Db,
     template_id: Option<&str>,
     body: Option<String>,
@@ -347,7 +350,11 @@ fn row_to_template(row: crate::storage::PromptTemplateRow) -> AppResult<PromptTe
     })
 }
 
-fn finish(
+/// 渲染 + 组装返回值。
+///
+/// 对 crate 内可见：渲染、token 估算、返回值形状只该有一处实现，
+/// 否则「行情提示词少了 warnings」这类偏差不会有人发现。
+pub(crate) fn finish(
     template: &PromptTemplate,
     context: &serde_json::Value,
     warnings: Vec<String>,

@@ -1,5 +1,6 @@
 pub mod account;
 pub mod credentials;
+pub mod kline;
 pub mod live;
 pub mod network;
 pub mod prompt;

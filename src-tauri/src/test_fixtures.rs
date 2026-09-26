@@ -5,6 +5,7 @@
 
 use crate::market::live::{LiveSnapshot, MarketState};
 use crate::market::regime::{Crowding, TrendRegime, VolRegime};
+use crate::market::series::{IndicatorKind, IndicatorSpec, MarketSeries};
 use crate::position::history::{ClosedPosition, RegimeSnapshot};
 use crate::position::merge::MergeReport;
 use crate::position::stats::{ReviewStats, StatGroup};
@@ -303,5 +304,57 @@ pub fn review_context() -> ReviewContext {
             note: "近 30 天有 12 次留痕，记录连续。".to_string(),
         },
         warnings: vec!["官方历史仓位在到达起始时间前已耗尽，该时段可能不完整".to_string()],
+    }
+}
+
+/// 行情页夹具：一个周期给足样本，另一个周期刻意让长周期指标**不可得**。
+///
+/// 这样黄金测试能同时覆盖「数据齐全」与「数据残缺」两条路径，
+/// 而后者才是提示词模块最需要验证的（见文件头）。
+pub fn market_series() -> Vec<MarketSeries> {
+    vec![
+        market_series_of("1H", 260, &[20, 200]),
+        // 只有 40 根，却要 EMA200：整列不可得
+        market_series_of("1D", 40, &[20, 200]),
+    ]
+}
+
+/// 造一个周期：`count` 根 K 线 + 指定周期的 EMA 列。
+pub fn market_series_of(bar: &str, count: usize, periods: &[u32]) -> MarketSeries {
+    let bar_ms = crate::fetch::plan::bar_millis(bar).expect("夹具用的粒度必须受支持");
+    let candles: Vec<crate::market::Candle> = (0..count)
+        .map(|index| {
+            // 刻意做成有起伏的序列：一条直线会让 RSI 之类的指标退化，
+            // 那样「列有没有对齐」反而测不出来。
+            let close = 100.0 + (index as f64 * 0.1) + ((index % 17) as f64 * 0.05);
+            crate::market::Candle {
+                ts: NOW - (count - index) as i64 * bar_ms,
+                open: close - 0.2,
+                high: close + 0.3,
+                low: close - 0.4,
+                close,
+                vol: 1_000.0 + (index % 23) as f64,
+                // 最后一根留作「未收盘」，用来验证模板会说清这件事
+                confirm: index + 1 != count,
+            }
+        })
+        .collect();
+
+    let specs: Vec<IndicatorSpec> = periods
+        .iter()
+        .map(|period| IndicatorSpec {
+            kind: IndicatorKind::Ema,
+            period: *period,
+        })
+        .collect();
+
+    let indicators = crate::market::series::compute(&candles, &specs, bar).expect("指标计算失败");
+
+    MarketSeries {
+        inst_id: "BTC-USDT-SWAP".to_string(),
+        bar: bar.to_string(),
+        candles,
+        indicators,
+        requested_count: count,
     }
 }

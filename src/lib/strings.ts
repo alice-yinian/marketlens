@@ -116,6 +116,7 @@ export const S = {
   // 主界面顶部标签（已解锁后）
   nav: {
     live: "实盘",
+    kline: "行情",
     account: "账户",
     review: "复盘",
     prompt: "提示词",
@@ -237,6 +238,82 @@ export const S = {
       volume: "24h 成交额",
       submit: "保存并进入主界面",
       saving: "保存中…",
+    },
+  },
+
+  // 行情页：K 线 + 逐根指标 → 给 AI 的分析提示词
+  kline: {
+    title: "行情分析",
+    subtitle: "选标的与周期，把原始 K 线与指标交给 AI",
+
+    // 标的选择
+    instrument: "标的",
+    instrumentEmpty: "关注列表为空",
+    instrumentEmptyHint: "请先在设置里添加要观察的标的，然后回到这里。",
+    instrumentLoading: "正在读取关注列表…",
+    instrumentErrorTitle: "读取关注列表失败",
+
+    // 周期与根数
+    bars: "周期",
+    barsHint: "可选多个周期；一套模板会按顺序把每个周期都写进提示词。",
+    barsLoading: "正在读取可用周期…",
+    barsErrorTitle: "读取可用周期失败",
+    barsEmpty: "应用没有返回任何可用周期，请重启后再试。",
+    count: "每个周期根数",
+    totalNote: (total: number, max: number) => `合计 ${total} / ${max} 根`,
+
+    // 指标
+    indicators: "指标（可选，逐根附列）",
+    indicatorsHint:
+      "勾选的指标会给每一根 K 线加一列。周期越长，需要的样本越多——历史不够时那一列会是 `—`。",
+    indicatorKind: "指标",
+    indicatorPeriod: "周期",
+    addIndicator: "添加指标",
+    removeIndicator: "删除",
+    indicatorDuplicate: "同一个指标与周期只保留一个，重复项已忽略。",
+    indicatorLimit: (max: number) => `最多 ${max} 个指标。`,
+    indicatorPeriodRange: (max: number) => `周期需在 1 ~ ${max} 之间。`,
+    noIndicators: "未选择指标：只给 AI 原始 K 线。",
+    indicatorKinds: {
+      ema: "指数移动平均（EMA）",
+      rsi: "相对强弱（RSI）",
+      atr_pct: "真实波幅占价格比（ATR%）",
+      realized_vol: "已实现波动率（按周期年化）",
+    },
+
+    // 计划
+    plan: "生成计划",
+    planning: "生成中…",
+    planTitle: "本次取数",
+    planErrorTitle: "计划生成失败",
+    planRequests: (n: number) => `预计 ${n} 个请求`,
+    planDuration: (text: string) => `预计耗时 ${text}`,
+    planTokens: (n: number) => `提示词约 ${n} token（不含指标列）`,
+    planBars: "周期",
+    planRows: "根数",
+    planRange: "覆盖范围",
+    planPages: "页数",
+    planWarnings: "提醒",
+
+    // 采集
+    fetch: "开始取数",
+    fetching: "取数中…",
+    fetchHint: "已收盘的 K 线会永久缓存，第二次打开同一份参数不会再联网。",
+    cachedNote: "数据已在本地：直接生成提示词即可，不会发起请求。",
+
+    // 生成提示词
+    build: "生成提示词",
+    building: "生成中…",
+    privacyNote: "行情数据是公开数据，不受隐私分级影响，因此这里没有隐私等级选项。",
+
+    errors: {
+      planTitle: "计划生成失败",
+      emptyBars: "至少选择 1 个周期。",
+      emptyInstrument: "请选择标的。",
+      countRange: (max: number) => `每个周期的根数需在 1 ~ ${max} 之间。`,
+      tooManyBars: (max: number) => `最多选择 ${max} 个周期。`,
+      tooManyCandles: (total: number, max: number) =>
+        `合计 ${total} 根超出上限 ${max} 根：减少周期数或降低每周期根数。`,
     },
   },
 
@@ -549,6 +626,7 @@ export const S = {
       userBadge: "自定义",
       kindLive: "实盘",
       kindReview: "复盘",
+      kindMarket: "行情",
       builtinNote: "内置模板由应用维护，升级时会被更新；改动请用「另存为」。",
     },
 

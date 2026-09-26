@@ -179,6 +179,9 @@ export function PromptPage() {
         <div className="flex min-w-0 flex-col gap-5">
           <TemplateLibrary
             templates={list}
+            // 提示词页只生成实盘 / 复盘提示词：行情模板引用的是 `series`，
+            // 在这页选它会立刻因类型校验被拒。
+            kinds={["live", "review"]}
             loading={templatesQuery.isPending}
             error={templatesQuery.error}
             onRetry={() => void templatesQuery.refetch()}

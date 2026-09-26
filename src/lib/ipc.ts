@@ -12,6 +12,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AccountSnapshot,
   AppInfo,
+  BarOption,
   BootstrapState,
   CacheStats,
   CleanupReport,
@@ -20,6 +21,8 @@ import type {
   DiagnosticExport,
   ExecutionReport,
   FetchPlan,
+  IndicatorSpec,
+  KlinePlan,
   LiveSnapshot,
   PrivacyLevel,
   Progress,
@@ -127,6 +130,32 @@ export interface SetProxyInput {
   url?: string | null;
 }
 
+/**
+ * `kline_plan` 的入参（对应 Rust 的 `KlinePlanRequest`）。
+ *
+ * **不联网**，只做校验与估算，所以调参数时可以放心地反复调用。
+ */
+export interface KlinePlanRequest {
+  inst_id: string;
+  /** K 线粒度，至少 1 个；可用值来自 `kline_bars` */
+  bars: string[];
+  /** 每个周期取最近多少根 */
+  candle_count: number;
+}
+
+/**
+ * `kline_build` 的入参（对应 Rust 的 `KlineBuildRequest`）。
+ *
+ * `indicators` 缺省 = 只要原始 K 线。指标是**装配阶段**的参数：
+ * 它不影响取数，所以改指标不需要重新联网拉数据。
+ */
+export interface KlineBuildRequest {
+  plan_id: string;
+  template_id?: string | null;
+  body?: string | null;
+  indicators?: IndicatorSpec[];
+}
+
 /** 命令名 → { 入参, 出参 } 的单一事实来源 */
 export interface Commands {
   app_info: { args: undefined; result: AppInfo };
@@ -218,6 +247,18 @@ export interface Commands {
    * 界面才能把「地址填错」与「代理进程没开」分开提示。
    */
   proxy_test: { args: undefined; result: ProxyProbe };
+
+  // ---- 行情（K 线 + 逐根指标） ----
+  /** 受支持的 K 线粒度。由 Rust 白名单生成，前端不另抄一份 */
+  kline_bars: { args: undefined; result: BarOption[] };
+  /** 生成行情取数计划。**不联网**，只做校验与估算（含提示词长度预估） */
+  kline_plan: { args: { request: KlinePlanRequest }; result: KlinePlan };
+  /** 执行取数；进度走 `fetch://progress`，可取消 */
+  kline_fetch: { args: { plan_id: string }; result: ExecutionReport };
+  /** 取消正在执行的取数；`false` 表示它已经结束了 */
+  kline_cancel: { args: { plan_id: string }; result: boolean };
+  /** 装配并渲染行情提示词（从本地库读 K 线，零请求） */
+  kline_build: { args: { request: KlineBuildRequest }; result: PromptOutput };
 }
 
 /**
@@ -232,7 +273,10 @@ export function call<K extends keyof Commands>(
 }
 
 /**
- * 采集进度事件名。必须与 Rust `commands/review.rs` 的 `PROGRESS_EVENT` 一致。
+ * 采集进度事件名。必须与 Rust `fetch/executor.rs` 的 `PROGRESS_EVENT` 一致。
+ *
+ * 复盘与行情**共用这一个事件名**（两边的 `Progress` 是同一个类型），
+ * 所以前端按 `plan_id` 过滤自己关心的事件即可。
  */
 export const FETCH_PROGRESS_EVENT = "fetch://progress";
 

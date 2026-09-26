@@ -6,3 +6,4 @@ pub mod cache;
 pub mod executor;
 pub mod paging;
 pub mod plan;
+pub mod registry;

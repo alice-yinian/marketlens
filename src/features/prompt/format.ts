@@ -34,9 +34,20 @@ export function barLabel(bar: string): string {
   return labels[bar] ?? bar;
 }
 
-/** 模板类型 → 中文标签 */
+/**
+ * 模板类型 → 名称。
+ *
+ * 用 `Record` 而不是三元表达式：模板类型每加一种，三元写法都会**默默**把新类型
+ * 归到 else 分支上（行情模板会被标成「复盘」），而 `Record` 会让编译期直接报错。
+ */
+const KIND_LABEL: Record<TemplateKind, string> = {
+  live: S.prompt.templates.kindLive,
+  review: S.prompt.templates.kindReview,
+  market: S.prompt.templates.kindMarket,
+};
+
 export function kindLabel(kind: TemplateKind): string {
-  return kind === "live" ? S.prompt.templates.kindLive : S.prompt.templates.kindReview;
+  return KIND_LABEL[kind];
 }
 
 /** 隐私等级 → 名称（含编号） */

@@ -65,7 +65,7 @@
 | 技术栈 | **Tauri v2 + 前端框架** | Rust 后端承载全部业务逻辑；前端为薄视图层 |
 | 功能边界 | **只读**：行情 + 仓位 + 复盘提示词 | 无交易签名、无下单链路；API Key 权限最小化 |
 | 实时性 | **不需要实时行情，按需获取** | **取消 WS 与常驻轮询**；取消预警；取消后台调度器 |
-| 模式划分 | **复盘与实盘分开** | 双模式、双上下文、双模板集、双采集路径 |
+| 模式划分 | **复盘与实盘分开** | 双模式、三类提示词上下文、三个模板集、双采集路径 |
 | 复盘数据范围 | **按时段获取所需数据** | 需要采集计划器、分页续传、进度反馈、时段重建能力 |
 | 提示词生成 | **本地模板渲染，产出文本** | 后端集成模板引擎，无外部 API 依赖 |
 | 密钥与数据 | **纯本地**：系统密钥库 + 本地 SQLite | 无服务端、无同步、无隐私外泄面 |
@@ -93,7 +93,7 @@ flowchart TB
         M0["模式切换：实盘 / 复盘"]
         L1["实盘：市场状态 · 当前仓位"]
         R1["复盘：时段选择 · 历史仓位 · 统计"]
-        P1["提示词工作台（双模板集）"]
+        P1["提示词工作台（三模板集）"]
         S1["设置与密钥"]
     end
 
@@ -118,7 +118,7 @@ flowchart TB
             RS["时段统计"]
         end
 
-        TPL["模板引擎<br/>minijinja · 双模板集"]
+        TPL["模板引擎<br/>minijinja · 三模板集"]
         CTX["上下文装配<br/>LiveContext / ReviewContext"]
         VAULT["密钥库<br/>Stronghold"]
         DB["存储层<br/>sqlx + SQLite"]
@@ -172,68 +172,68 @@ flowchart TB
 datemode/
 ├─ docs/
 │  └─ DESIGN.md                 # 本文档
-├─ src/                         # 前端（WebView）
+├─ src/                         # 前端（WebView，只是视图层）
 │  ├─ main.tsx
-│  ├─ modes/
-│  │  ├─ live/                  # 实盘：市场状态 / 当前仓位
-│  │  └─ review/                # 复盘：时段选择 / 历史仓位 / 统计
-│  ├─ features/onboarding/      # 首次启动引导（建 vault → 录 Key → 选标的）
-│  ├─ features/prompt/          # 提示词工作台（双模板集）
-│  ├─ features/settings/
-│  ├─ lib/
-│  │  ├─ ipc.ts                 # 命令的类型化封装（唯一 IPC 出口）
-│  │  ├─ strings.ts             # 全部界面文案集中于此（为将来 i18n 留口）
-│  │  └─ types.ts               # 由 Rust 生成的类型（见 §7.4）
-│  └─ styles/
+│  ├─ App.tsx                   # 顶层装配：引导闸门 + 标签页
+│  ├─ features/
+│  │  ├─ live/                  # 实盘：市场状态 + 当前仓位
+│  │  ├─ kline/                 # 行情：K 线 + 逐根指标 → 提示词
+│  │  ├─ account/               # 账户：权益 / 持仓
+│  │  ├─ review/                # 复盘：时段选择 / 采集进度 / 统计
+│  │  ├─ prompt/                # 提示词工作台（模板库 / 编辑器 / 隐私分级 / 导出）
+│  │  ├─ onboarding/            # 首次启动引导（建 vault → 配代理 → 录 Key → 选标的）
+│  │  └─ settings/              # 设置：网络代理 / 缓存 / 诊断
+│  └─ lib/
+│     ├─ ipc.ts                 # 命令的类型化封装（唯一 IPC 出口）
+│     ├─ usePlanFetch.ts        # 采集状态机（进度事件 / 取消），复盘与行情共用
+│     ├─ strings.ts             # 全部界面文案集中于此（为将来 i18n 留口）
+│     └─ types.ts               # 由 Rust 生成的类型（见 §7.4）
 ├─ src-tauri/
 │  ├─ Cargo.toml
 │  ├─ tauri.conf.json
-│  ├─ capabilities/default.json # 权限白名单：仅放行自定义命令
-│  ├─ templates/                # 内置模板（编译期 include_str! 进二进制）
-│  │  ├─ live/
-│  │  │  ├─ daily_review.md.j2
-│  │  │  └─ position_risk.md.j2
-│  │  └─ review/
-│  │     ├─ period_review.md.j2
-│  │     └─ trade_postmortem.md.j2
+│  ├─ capabilities/default.json # 权限白名单：仅放行 core:default
+│  ├─ templates/                # 内置模板正文（编译期 include_str!，扁平放置，见 §6.6.4）
 │  ├─ migrations/               # sqlx 迁移（0001_init.sql ...）
 │  └─ src/
-│     ├─ lib.rs                 # Tauri builder / 插件注册 / 命令注册
-│     ├─ error.rs
+│     ├─ lib.rs                 # Tauri builder / 状态注册 / 命令注册
+│     ├─ main.rs
+│     ├─ error.rs               # 统一错误模型
+│     ├─ settings.rs            # settings 表读写（watchlist / 代理 / 引导标志）
+│     ├─ vault.rs               # Stronghold 封装
+│     ├─ review.rs              # 复盘编排层（把采集结果装配成结论）
+│     ├─ credentials.rs         # 凭据服务（明文进 vault、元数据进库）
+│     ├─ system.rs              # 应用信息
 │     ├─ commands/              # #[tauri::command] 薄封装（参数校验 + 调服务）
-│     ├─ okx/
-│     │  ├─ client.rs           # REST 客户端（签名/限流/重试）
+│     ├─ okx/                   # 接入层
+│     │  ├─ client.rs           # REST 客户端（签名 / 限流 / 重试 / 代理）
 │     │  ├─ sign.rs             # HMAC-SHA256 + Base64 签名
-│     │  ├─ paging.rs           # 游标分页（after/before）通用迭代器
+│     │  ├─ endpoints.rs        # 端点与限流元数据
 │     │  ├─ models.rs           # 响应反序列化结构体
-│     │  ├─ endpoints.rs        # 端点元数据（鉴权/限流/分页方式/历史窗口）
+│     │  ├─ de.rs               # 容错反序列化（空串 / 类型漂移）
 │     │  └─ ratelimit.rs        # 令牌桶
-│     ├─ fetch/
-│     │  ├─ plan.rs             # FetchPlan 展开
-│     │  ├─ executor.rs         # DAG 执行 + 并发控制 + 取消
-│     │  └─ cache.rs            # TTL 缓存判定
-│     ├─ market/
+│     ├─ fetch/                 # 采集
+│     │  ├─ plan.rs             # 计划展开（复盘 FetchPlan / 行情 KlinePlan）
+│     │  ├─ executor.rs         # 序列间并发 + 进度 + 取消 + 续传
+│     │  ├─ registry.rs         # 计划与取消令牌的注册表
+│     │  ├─ paging.rs           # 游标分页
+│     │  └─ cache.rs            # 实盘快照 TTL 缓存
+│     ├─ market/                # 市场状态
+│     │  ├─ indicators.rs       # EMA/RSI/ATR/已实现波动率/基差（纯函数，只算最新一根）
+│     │  ├─ series.rs           # 逐根指标序列（行情页用，与 K 线等长）
 │     │  ├─ live.rs             # 当前市场状态快照
-│     │  ├─ historical.rs       # 时段序列拉取
-│     │  ├─ indicators.rs       # EMA/RSI/ATR/已实现波动率/基差
 │     │  ├─ regime.rs           # 状态分类
-│     │  └─ reconstruct.rs      # 关键时点状态重建（用于复盘逐仓归因）
-│     ├─ position/
-│     │  ├─ current.rs          # 当前仓位
-│     │  ├─ history.rs          # 官方历史仓位同步
-│     │  ├─ trace.rs            # 本地留痕（顺带记录）
-│     │  └─ merge.rs            # 双源合并/去重/统计
-│     ├─ prompt/
-│     │  ├─ live_ctx.rs         # LiveContext 装配
-│     │  ├─ review_ctx.rs       # ReviewContext 装配
+│     │  └─ reconstruct.rs      # 关键时点状态重建（复盘逐笔归因）
+│     ├─ position/              # 仓位：current / history / trace / merge / stats
+│     ├─ prompt/                # 提示词
+│     │  ├─ context.rs          # 三类上下文装配（实盘 / 复盘 / 行情）
 │     │  ├─ privacy.rs          # 隐私分级
-│     │  ├─ render.rs           # minijinja 渲染 + 自定义过滤器
+│     │  ├─ render.rs           # minijinja 渲染 + 缺失变量静态分析
+│     │  ├─ filters.rs          # 自定义过滤器（na / table / usd / pct ...）
+│     │  ├─ templates.rs        # 模板库（内置 + 用户）
 │     │  └─ tokens.rs           # token 估算
-│     ├─ storage/
-│     │  ├─ db.rs               # 连接池、迁移
-│     │  └─ repo/
-│     └─ vault.rs               # Stronghold 封装
-└─ android/                     # tauri android init 生成
+│     ├─ storage/               # SQLite（sqlx）：db.rs / mod.rs
+│     └─ system/                # 诊断导出与缓存策略
+└─ tools/xshot/                 # 无头验证：X11 抓图与输入注入（不参与应用构建）
 ```
 
 > 注意：**没有 `scheduler.rs`、没有 `ws.rs`**。这是「不要实时」的直接体现。
@@ -442,6 +442,8 @@ pub struct SeriesResult {
 > 这个量级完全不需要实时订阅——用户点一次、等几秒、拿到完整上下文，比常驻长连接更符合「复盘」这个使用场景。
 
 **时段上限校验**：`review_plan` 强制校验 `to - from ≤ 90 天`（已确认的硬上限），超出直接返回 `AppError::RangeTooLarge` 并在 UI 提示。同时按 bar 校验页数：若估算请求数 > 800，返回警告并建议改用更大 bar（如 1H → 4H），由用户确认后继续——**绝不静默截断时段**（静默截断会让用户以为看全了，是最危险的行为）。
+
+**粒度校验用白名单，不用 `bar_millis` 的泛匹配**：`bar_millis` 认的是「数字 + `m/H/D/W`」这种形状，于是 `5H`、`100D` 这类 OKX 根本不接受的组合会被放行，错误要等到**联网取数**时才以含糊的 `51000 Parameter bar error` 暴露——用户看到的是「采集失败」，而不是「你选的粒度不存在」。现在 `review_plan` 与 `kline_plan` 都改走 `CANDLE_BARS` 白名单（14 个粒度，各带中文标签：`1m`…`1W`），在**输入处**就拒掉，报错才指向真正的问题；同一份白名单也保证两条管线支持的是同一套粒度（白名单里的每个粒度都有一条「必须能被 `bar_millis` 换算」的测试兜底）。
 
 #### 6.2.2 执行器
 
@@ -726,9 +728,41 @@ stats      → { win_rate, profit_factor, expectancy, avg_hold, fee_drag, by_dim
 coverage   → { trace_records, gaps, data_quality_notes }   # 数据可信度声明
 ```
 
+**行情 `MarketContext`**（第三个上下文——**不带账户、不带仓位**）：
+
+```
+meta       → { schema_version, generated_at, data_source: "OKX",
+               privacy: { level, note }, warnings: [String] }
+instrument → { inst_id, base_ccy, quote_ccy }        # 拆不出基币/计价币时给 null，不猜一个「看起来对」的
+series     → [{
+                 inst_id, bar, bar_label,
+                 candle_count, requested_count,         # 实际取到几根 vs 用户要了几根
+                 from, to,
+                 last_candle: { ts, time, confirmed },  # confirmed=false 时必须提示「这根还会变」
+                 columns: [String],                     # 表头
+                 rows: [ { time, open, high, low, close, vol, <指标列…> } ],
+                 indicators: [ { name, kind, period, description, available,
+                                 insufficient_bars, interior_missing, reason } ],
+                 unavailable: [String]                  # 周期级 + 指标级的缺失声明，合成一个清单
+               }]
+```
+
+与实盘 / 复盘两份契约的两点不同：
+
+- **没有 `account` / `positions` 块**（也没有「不可得」的占位版本）——行情页与账户无关，模板引用账户字段是契约被破坏，不是「暂时不可得」。有测试钉住这件事（§13.1）。
+- **`meta` 里没有 `mode` 字段**：类型由模板集区分（模板自带 `kind`），上下文不需要再自报家门；`privacy` 三个等级下都是 L0 的内容（见下面的引用块）。
+
+三条与模板作者的约定：
+
+- **`columns` 与 `rows` 的键同源**：都由装配生成（先出列清单，再按键逐格填行），模板只写 `{{ s.rows | table(s.columns) }}`。加一个指标列**不用改模板**，也不会出现「表头写 EMA20、数据其实是 RSI」这种没人会发现的错位。
+- **`indicators` 是元信息，不是数据**：逐根数值在 `rows` 里逐格展开；这块只回答「这一列是什么、从第几根起才有值、中间有没有断、为什么整列都没有」。模板据此**自动生成图例**（§6.6.4），不让用户手写列名说明——手写迟早会与数据对不上。
+- **`unavailable` 把周期级与指标级的缺失合成同一个清单**（「请求 300 根，实际只有 120 根」、`EMA200：样本不足（当前 120 根）`），模板只要遍历它，不必自己判断缺的是哪一种；这与上面「不可得必须显式声明」是同一条规则的下沉。
+
+> **行情不受隐私分级影响**：价格、成交量、指标都是公开数据，三个等级产出**逐字节相同**的内容（有测试断言，§13.1），行情页也不显示隐私选择器——显示它会让人以为「切到 L2 能脱敏价格」。装配流程里仍然走一次 `privacy::apply`，为的是守住「装配之后必须过一遍隐私」这条不变量：将来若有人往这个上下文里加账户字段，不会因为忘了这一步而泄漏。理由见 ADR 23。
+
 **契约的强制手段**：上下文是 Rust 结构体，`serde` 序列化后注入模板；minijinja 配 `UndefinedBehavior::Strict` → 模板引用不存在的变量**直接报错**，而不是静默渲染成空。否则用户拿到一段缺数据的提示词还浑然不觉，这比报错危险得多。
 
-#### 6.6.4 内置模板（双模板集）
+#### 6.6.4 内置模板（三个模板集，共 6 个）
 
 **`live/daily_review.md.j2`（实盘·日常）**
 
@@ -841,6 +875,17 @@ coverage   → { trace_records, gaps, data_quality_notes }   # 数据可信度�
 
 另两个：**`live/position_risk.md.j2`**（聚焦当前单一持仓的强平距离与仓位大小）、**`review/trade_postmortem.md.j2`**（针对单笔已平仓位的深度复盘）。
 
+**行情模板集（第三类上下文）**：`kline_structure`（K 线结构分析）、`kline_volatility`（波动与风险体检）。正文在 `src-tauri/templates/kline_structure.md` 与 `kline_volatility.md`，同样走 `include_str!` 编译进二进制。
+
+- 两个模板都用 `{% for s in series %}` 遍历，**1 个周期与 N 个周期共用同一份正文**——「只有一个周期」是正文里的一个分支（`{% if series | length == 1 %}`，会额外要求 AI 说明「这个判断在什么条件下会失效」），而不是另一套模板。被否方案见 ADR 21。
+- 数据表格一律 `{{ s.rows | table(s.columns) }}`，列由装配决定（§6.6.3）：用户在界面上加一个 `EMA20`，模板**一个字都不用改**。
+- 指标可选 4 种：**EMA**、**RSI**、**ATR%**（真实波幅占收盘价的比例）、**已实现波动率**（按该粒度年化：1H → 8760、1D → 365，由 `bar_millis` 反推而不是手写表）。**周期是开放的**——界面上填数字（1..=500），不是固定枚举；一次最多 8 列，因为每一列都会给每一根 K 线加一格，直接乘进 token。
+- 两者分工不同：`kline_structure` 问结构（更高高点 / 更低低点、关键价位、量价关系、指标背离）；`kline_volatility` 用 ATR% 换算「一根 K 线通常走多远」、判断波动在放大还是收敛、找异常单根、比较多周期波动是否一致。
+- 它们**不碰任何账户字段**——上下文里根本没有 `account` / `positions`，有测试钉住模板也不去引用（§13.1）。
+- 指标列里的 `—` 是「该根样本不足」，不是 0；表头下方写明每列从第几根起才有值，最后一根未收盘时会明确标注**尚未收盘，不要当成已定型的收盘价**。
+
+> 内置模板现在共 **6 个**：`live_quick`、`live_risk`、`review_performance`、`review_lesson`、`kline_structure`、`kline_volatility`（正文都在 `templates/*.md`，id 按「类型_用途」收敛）。上面两个 jinja 代码块是设计期的结构示意，落地时文件名与 id 以此处为准。
+
 > **关于「不硬编码」（已确认的 i18n 策略）**：界面文案集中在 `src/lib/strings.ts`；内置模板正文用 `include_str!` 从 `templates/` 目录加载，**不散落在 Rust 代码里**——两者都天然满足「集中管理」。本期不引入 i18next：提示词模板是给 AI 读的，中文不影响效果，且用户随时可「另存为」改成任意语言。将来要国际化时，替换 `strings.ts` 与 `templates/` 目录即可，不需要动任何逻辑。
 
 #### 6.6.5 隐私分级
@@ -931,6 +976,59 @@ sequenceDiagram
 
 **Token 估算**：不引入完整 tokenizer（体积与维护成本不划算），用 `cjk 字符数 + 非 cjk 字符数 / 4` 的启发式，UI 上**明确标注为「估算」**。宁可标注不确定，也不假装精确。
 
+#### 6.7.3 行情（第三类上下文）
+
+前两条管的是**账户视角**（实盘有当前仓位、复盘有历史仓位）。行情页把账户整个拿掉，只回答「**这个标的、这几个周期，K 线长什么样**」——所以它是第三类上下文，不是实盘的变体，也不需要 API Key（只打公开端点）。
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant F as 前端
+    participant K as KlineService
+    participant P as Executor
+    participant O as OKX
+    participant DB as SQLite
+
+    U->>F: 选标的 + 勾周期（≤6）+ 每周期根数（≤500）
+    F->>K: kline_plan({inst_id, bars, candle_count})
+    K->>K: 粒度白名单校验 + 根数上限 + token 预估
+    K-->>F: KlinePlan{est_requests, est_duration_ms, est_tokens, warnings}
+    U->>F: 确认执行
+    F->>K: kline_fetch(plan_id)
+    K->>P: 执行（与复盘共用 ExecutablePlan 路径）
+    P->>O: 分页请求（已收盘 K 线永久缓存）
+    P->>DB: 落库
+    P-->>F: fetch://progress 事件流
+    U->>F: 挑指标（EMA / RSI / ATR% / RVol，周期可改）→ 生成提示词
+    F->>K: kline_build({plan_id, indicators, template_id})
+    K->>DB: 读「请求根数 + 最长指标周期」（不联网，零请求）
+    K->>K: 逐根算指标 → 只显示最后 N 根
+    K-->>F: { text, token_estimate, warnings }
+```
+
+**计划形状与复盘不同，执行路径与复盘相同**：
+
+- `FetchPlan` 只有一个 `from` / `to` / `bar`，而行情页**每个周期各有自己的区间**（200 根 1H 是 8 天，200 根 1D 是 200 天）。硬塞进去就得让那几个字段说谎，而界面会把它们显示给用户——所以 `KlinePlan` 是独立结构。计划 id 只哈希**与用户选择有关**的字段：`from` 由 `now` 反推，算进去会让同一份选择每秒产生一个新 id，续传与取消就全都对不上了。
+- 但**执行路径只有一条**：`executor.rs` 的 `ExecutablePlan` trait（`plan_id` / `series` / `est_requests`）由 `FetchPlan` 与 `KlinePlan` 共同实现，于是「序列内顺序分页、序列间并发、已收盘永久缓存、进度上报、序列级续传、可取消」这一整套行为不是各写一遍。`PROGRESS_EVENT`（`fetch://progress`）也随之从 `commands/review.rs` 挪进执行器——它是两条管线共用的协议，留在某一条命令文件里会让另一条不得不反向依赖它。
+- 两种计划在 `fetch/registry.rs` 里**各存一张表**（字段与语义都不同，塞进一个泛型容器只会到处向下转型），按 id 原样往返——取错表会让下游拿一个字段形状不对的计划去跑。取消令牌按计划 id 逐个隔离、结束即清理（`cancel_tokens_are_isolated`），未登记的 id 报明确的错并说清是哪种计划。
+
+**指标是 `kline_build` 的参数，不是计划的**：指标完全不影响取数（K 线拉回来就是拉回来了），所以「换个指标看看」是**纯本地操作、零请求**。这条分割线与复盘「采集负责拉数据、装配负责算结论」是同一条。
+
+**读的比显示的多**（ADR 24）：按 `请求根数 + 最长指标周期` 从库里读，算完指标**只显示最后 N 根**。否则 `EMA200` 配上「只要 200 根」会得到 199 个 `—`——用户选 200 根，看到的却是一列破折号，这个功能等于没有。库里历史不足时仍然诚实：头部该是 `—` 就是 `—`，并由模板声明原因（「请求 300 根，实际只有 120 根」）。
+
+**行情不用 `profile`**：实盘 / 复盘的详略由上面的 profile 档位决定；行情的体积由「周期数 × 每周期根数」直接决定，而这两个数就是用户自己选的。取而代之的是**计划阶段就给 token 预警**：`总根数 × APPROX_TOKENS_PER_ROW(40)` 得到 `KlinePlan.est_tokens`，超过 `BUSY_PROMPT_TOKENS(20000)` 时 `kline_plan` 直接在 `warnings` 里说明——用户有权在**等待联网取数之前**知道自己要花多少（等到提示词生成完再发现太长，那批请求已经花掉了）。这个 40 不是拍脑袋：黄金测试实测「300 行 × 2 个指标列」渲染约 **10.2k token**（每行约 34），无头冒烟跑真实数据时「200 行 × 1 个指标列」预估 8000、**实际 6018**（每行约 30）——两次实测都说明 40 是**保守上界**，宁可高估也不给用户一个乐观到误导的数字。注意 `est_tokens` **不含指标列**——指标是 `kline_build` 的参数，计划阶段还不知道（这也是界面标注「量级预估」而不是精确值的原因）。
+
+**渲染路径不另写一份**：`commands/prompt.rs` 的 `resolve_template` 与 `finish` 改为 `pub(crate)` 被行情命令复用——模板 id / body 的解析优先级、`TemplateKind` 校验、渲染与 token 估算只该有一份实现，否则「编辑器实时预览」与「正式生成」迟早出现两套语义。
+
+**页面上怎么走**：`行情` 是顶部导航的第二个标签（紧跟「实盘」）。主线只有一条：选标的 → 勾周期（≤6）→ 填根数（≤500）→ 可选加指标 → 「生成计划」→「开始取数」→ 选模板 →「生成提示词」→ 预览 / 导出。四处刻意的界面决定：
+
+- **不显示隐私等级选择器**：行情是公开数据，三个等级产出逐字节相同（ADR 23）。显示它只会让人以为「切到 L2 能脱敏价格」。
+- **没有可用标的时，整块参数表单不渲染**：否则用户会把周期、根数、指标都配好，最后才发现「生成计划」永远是灰的。同理，**读取失败不退化成「关注列表为空」**——「空」是一个结论，「读失败」是另一回事，混在一起会让用户跑去设置页白找一圈。
+- **模板库只列行情模板**（`TemplateLibrary` 新增 `kinds` 参数）：实盘 / 复盘模板引用 `account` / `positions`，在行情上下文里根本不存在，选中只会立刻被类型校验拒掉。
+- **进度与取消复用复盘那一套**（`lib/usePlanFetch.ts`）：Rust 侧是同一个执行器，前端也就该只有一份状态机——两份各自订阅 `fetch://progress` 迟早会出现「一边正确丢弃了迟到事件、另一边没有」这种只在特定时序下暴露的差异。
+
+> **踩过的坑**：指标行的 React `key` 一开始写成了「种类 + 周期」。周期一变 key 就变，React 会**重建整行**、输入框随之失焦——结果是两位数周期根本打不进去（敲 `2` 就失焦，`0` 落到别处），而界面看起来毫无异常。改用序号作 key（行内控件全是受控的，复用 DOM 节点不会残留状态），并加了 `周期输入框在按键后不被重建` 守住它。
+
 ---
 
 ### 6.8 IPC 命令清单
@@ -956,9 +1054,15 @@ sequenceDiagram
 | `positions_history_sync` | `{from?, to?}` | `{synced}` | 官方历史仓位同步 |
 | `positions_history_query` | `{filter, page}` | `{items, total}` | |
 | `position_stats` | `{from?, to?, group_by?}` | `Stats` | |
+| **行情** | | | |
+| `kline_bars` | – | `[{value, label}]` | 受支持的 14 个 K 线粒度。由 Rust 白名单生成，界面不另抄一份——抄一份的话，加一个粒度不会自动出现在界面上，而两边不一致只能靠人眼发现 |
+| `kline_plan` | `{request: {inst_id, bars, candle_count}}` | `KlinePlan{est_requests, est_duration_ms, est_tokens, warnings}` | **不联网**：粒度白名单校验 + 根数上限 + token 预估。`bars` 至少 1 个、最多 6 个；`candle_count` ≤ 500 且各周期之和 ≤ 1500 |
+| `kline_fetch` | `{plan_id}` | `ExecutionReport` | 与 `review_fetch` 共用执行器（同一套进度 / 取消 / 续传 / 已收盘永久缓存）；进度走 `fetch://progress` |
+| `kline_cancel` | `{plan_id}` | `bool` | `true` = 确实有一个正在执行的计划被取消了；`false` = 它已经结束了 |
+| `kline_build` | `{request: {plan_id, template_id?, body?, indicators}}` | `{text, token_estimate, warnings}` | **只读本地库**（不联网）：读 K 线 → 逐根算指标 → 渲染。指标是这里的参数，所以「换个指标看看」零请求；`body` 供编辑器实时预览 |
 | **通用** | | | |
-| `templates_list` / `templates_get` / `templates_save` / `templates_delete` | | | 分 `live`/`review` 两集；内置模板不可删，只能另存为 |
-| `prompt_build` | `{template_id, profile, privacy, source}` | `{text, token_estimate, warnings}` | `source` 指向实盘快照或复盘 plan |
+| `templates_list` / `templates_get` / `templates_save` / `templates_delete` | | | 分 `live` / `review` / `market` 三集；内置模板不可删，只能另存为 |
+| `prompt_build` | `{template_id, profile, privacy, source}` | `{text, token_estimate, warnings}` | `source` 指向实盘快照或复盘 plan（行情走 `kline_build`，它自带 `plan_id` 与指标参数） |
 | `prompt_preview` | `{template_body, source}` | `{text, error?}` | 编辑器实时预览 |
 | `prompt_export` | `{text, format, path?}` | `{path}` | |
 | `settings_get` / `settings_set` | | | |
@@ -1324,7 +1428,7 @@ CREATE TABLE journal (
 | 实盘市场状态 / 当前仓位 | ✅ | ✅ |
 | 复盘时段重建 | ✅ | ✅（切后台会暂停，回前台续传） |
 | 历史仓位同步 | ✅ | ✅ |
-| 提示词生成（双模板集） | ✅ | ✅ |
+| 提示词生成（三模板集） | ✅ | ✅ |
 | 模板编辑 | ✅ | ⚠️ 只读 + 简单修改 |
 | 图表叠加仓位标记 | ✅ 大屏体验佳 | ✅ 可横屏 |
 | 离线查看已缓存时段 | ✅ | ✅ |
@@ -1367,7 +1471,7 @@ CREATE TABLE journal (
 | 限流器 | `tokio::time::pause()` | 断言窗口内放行数量与退避时序，不依赖真实时间 |
 | 合并算法 | Rust `#[test]` | 双源 fixture：仅官方 / 仅本地 / 两源同 posId / 无 posId 模糊匹配 / 时间精度标注 |
 | **可得性矩阵** | Rust `#[test]` | 对每个指标断言「超出窗口时返回 Unavailable 而非空值」 |
-| 模板渲染 | 黄金文件测试 | 固定上下文 → 断言输出与 `tests/golden/*.md` 逐字节一致；**双模板集 × 三隐私等级** |
+| 模板渲染 | 黄金文件测试 | 固定上下文 → 断言输出与 `tests/golden/*.md` 逐字节一致；**三模板集 × 三隐私等级** |
 | 隐私分级 | Rust `#[test]` | **断言 L1/L2 输出中不含原始金额字符串**（安全测试，必须有） |
 | 缓存 TTL | Rust `#[test]` + `tokio::time::pause()` | 断言定型数据永久命中、未定型数据不被缓存 |
 | OKX 集成 | `wiremock` | 用录制/构造响应驱动完整流程，含 429、5xx、业务错误码 |
@@ -1408,6 +1512,29 @@ CREATE TABLE journal (
 | `socks_proxies_are_supported` | `reqwest` 的 `socks` 特性没被误删（删掉后 `Proxy::all("socks5h://…")` 会直接报错，用户只看到「无法解析代理地址」） |
 | `proxy_credentials_never_reach_the_bundle` | 诊断包的白名单机制实战验收：代理 URL 里的 `user:pass` 绝不进诊断包 |
 | `redact_proxy_masks_only_the_password` | 日志脱敏是**函数**而不是「记得别打」的约定 |
+
+**行情页（增量·第三类上下文）**：
+
+| 测试 | 守住什么 |
+|---|---|
+| `kline_plan_covers_the_last_n_candles_of_each_bar` / `kline_plan_id_is_stable_across_time` | 计划由「最近 N 根」反推区间（每个周期各有自己的区间）；计划 id **不含 `from`**——它由 `now` 反推，算进去会让同一份选择每秒产生一个新 id，续传与取消全都对不上 |
+| `kline_plan_rejects_bars_okx_does_not_accept` / `kline_plan_rejects_month_bars` / `every_whitelisted_bar_is_convertible` | 粒度走白名单而不是 `bar_millis` 的泛匹配：`5H`、`100D` 这类 OKX 不接受的组合在**输入处**就拒掉；月线明确不支持；白名单里每个粒度都必须能被 `bar_millis` 换算（否则「能选但不能算」） |
+| `kline_plan_enforces_candle_limits` / `kline_plan_rejects_empty_or_too_many_bars` / `kline_plan_dedupes_bars_but_keeps_order` | 500 / 每周期、1500 / 计划、6 个周期；去重但**保留用户勾选顺序**（打乱顺序会让「第 1 个周期」这类文案对不上） |
+| `kline_plan_warns_when_the_prompt_would_be_large` | 超过 20k token 在**计划阶段**就预警，而不是等提示词生成完才发现 |
+| `every_column_is_as_long_as_the_candles` / `leading_bars_are_unavailable_and_the_rest_are_filled` / `empty_candles_yield_empty_columns` | 指标列与 K 线**等长**（`Vec<Option<f64>>`）：照抄 `live.rs::rolling_vol_history` 的 `filter_map` 写法会让两列静默错位，而错位的数据看起来完全正常 |
+| `last_value_matches_the_single_shot_function` | 「复用已验证纯函数 + 滑动窗口」算出的最后一根，必须与实盘那份单点实现**同值**——否则两条管线会对同一根 K 线给出两个数字 |
+| `custom_periods_change_the_values` / `whole_column_is_unavailable_when_history_is_too_short` / `annualization_factor_follows_the_bar` | 周期开放自定义（1..=500）且真的影响数值；历史不足时整列不可得而不是补 0；年化因子由 `bar_millis` 反推（1H → 8760、1D → 365），不手写表 |
+| `spec_validation_bounds_period_and_count` | 周期与数量边界；**去重放在数量校验之前**（前端重复提交同一个指标不该被当成「选太多」） |
+| `indicators_use_more_history_than_displayed` | 「EMA200 + 只要 200 根 = 199 个破折号」那个坑的回归测试：指标在「请求根数 + 最长周期」上算，只显示最后 N 根 |
+| `short_history_leaves_leading_gaps` / `empty_database_yields_an_empty_series` | 库里历史不足时头部留 `—` 并记「请求 X 根、实际 Y 根」；一根 K 线都没有的周期如实记账，不让整份提示词报废 |
+| `market_context_is_identical_at_every_privacy_level` | 行情不受隐私分级影响：L0 / L1 / L2 装配出的上下文**逐字节相同** |
+| `kline_templates_render_for_one_and_many_series` | 一套正文覆盖 1 个与 N 个周期（选择「一套模板」而不是两套的直接理由） |
+| `kline_template_renders_every_candle_row` / `kline_template_declares_unavailable_indicator_columns` / `kline_template_flags_the_unconfirmed_candle` | 每一根都进表格；不可得列与「前 N 根样本不足」都要声明；未收盘的最后一根必须标注 |
+| `kline_templates_do_not_touch_account_fields` | 行情模板里不得出现 `account.` / `positions` 引用——上下文里根本没有它们，出现就是契约被破坏 |
+| `both_plan_kinds_round_trip` / `cancel_tokens_are_isolated` / `unknown_plan_is_a_clear_error` | 两种计划在 `FetchRegistry` 里各存一张表、按 id 原样往返（取错表会让下游拿一个字段形状不对的计划去跑）；取消令牌按 id 逐个隔离、结束即清理；未登记的 id 报明确的错并说清是哪种计划，不静默失败 |
+| `token_estimate_is_reasonable_for_builtins` | 内置模板都能量出 token 且量级合理（> 50、< 8000）；行情模板**用小样本**量正文长度——「数据多」不该被误判成「模板长」 |
+
+**总量**：`cargo test --lib` 的通过数从功能前的 **188** 项到功能后的 **219** 项（另有 7 项联网测试默认 `#[ignore]`）。
 
 ### 13.2 指标公式的独立交叉验证 ⭐
 
@@ -2275,3 +2402,8 @@ npx tauri build --no-bundle
 | **17** | **首次启动由用户自选标的（预勾选 BTC/ETH/SOL）** | 尊重用户对标的的自主权，同时用预勾选避免新用户面对空白多选框卡住；上限 10 个控制复盘请求量 | 硬编码默认标的（用户第一眼看到不关心的币） |
 | **18** | **界面文案集中 `strings.ts`，本期不上 i18next** | 满足「不硬编码」的可维护性诉求，又不引入本期无收益的双语工作量；模板正文本身已是集中管理 | 现在就双语（无收益）、直接写死（将来难抽） |
 | **19** | **网络代理在引导内可配，且「保存即测试」** | 受限网络下 `credentials_test` 与 `watchlist_candidates` 都会失败，而失败信息不指向真正原因（网络到不了 OKX）；显式代理 > 系统代理，未配置则沿用系统 / 环境变量代理 | 只认环境变量（GUI 应用里用户根本没法设）、配置后要求重启（用户会以为没生效）、只保存不测试（用户不知道填对没有） |
+| **20** | **逐根指标用「复用已验证纯函数 + 滑动窗口」（O(n²)）而不是写增量算法** | 公式已与 Python 独立实现逐位比对过（§13.2）；增量实现等于让「公式到底对不对」重新变成未知，而 n ≤ 500 时 O(n²) 约 25 万次基本运算，微秒~毫秒级——用可忽略的耗时换掉一类会污染每条 AI 结论的风险 | 增量实现（快，但要重新交叉验证一遍，且两套实现迟早不一致） |
+| **21** | **一套模板遍历 `series`，覆盖 1..N 个周期** | 「单周期」只是 `series` 长度为 1 的特例，正文里一个分支就够了（还能顺带要求 AI 说明结论的适用范围）；两套模板在加字段 / 改口径时总会只改一边 | 单周期与多周期各写一套模板（两边迟早不一致） |
+| **22** | **不支持月线 `1M` / `3M`** | `bar_millis` 手里的单位只有 m/H/D/W，而月份长度不固定（28~31 天）——换算成固定毫秒就是撒谎。与其给一个近似值，不如明确不支持（界面里也不出现） | 给一个近似值（「看起来对」的错数据比没有更糟） |
+| **23** | **行情不受隐私分级影响** | 沿既有规则「市场数据不是隐私」：价格、成交量、指标都是公开数据，三个等级产出**逐字节相同**的内容（有测试断言）；行情页也不显示隐私选择器——显示它会让人以为「切到 L2 能脱敏价格」 | 让行情也走三级脱敏（没有可脱敏的东西，却让人以为有）。装配流程里仍调用一次 `privacy::apply`，守的是「装配之后必须过一遍隐私」这条不变量 |
+| **24** | **行情「读的比显示的多」：按 `请求根数 + 最长指标周期` 从库里读，算完指标只显示最后 N 根** | 否则 `EMA200` 配上「只要 200 根」会得到 199 个 `—`，用户看到的是一列破折号，功能等于没有；这与图表工具的行为一致（图上画 200 根，EMA200 仍是完整的一条线）。库里历史不足时仍然诚实：头部该是 `—` 就是 `—`，由模板声明原因 | 只读显示根数（指标列大面积破折号）；读满上限再截断（每次都要读无关的历史） |
