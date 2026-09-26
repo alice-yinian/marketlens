@@ -131,15 +131,39 @@ pub async fn template_delete(db: State<'_, Db>, id: String) -> AppResult<()> {
     Ok(())
 }
 
+/// 校验模板正文的语法，并列出它引用了哪些变量。
+///
+/// **不需要上下文、也不联网**：模板管理页用它给作者即时反馈。真正的渲染
+/// （含「缺哪个变量」）由实盘 / 复盘 / 行情各页的生成流程负责——那里才有上下文。
+#[tauri::command]
+pub async fn template_check(body: String) -> AppResult<Vec<String>> {
+    render::check(&body)
+}
+
+/// 读取全局隐私等级。
+#[tauri::command]
+pub async fn privacy_get(db: State<'_, Db>) -> AppResult<PrivacyLevel> {
+    settings::read_privacy(&db).await
+}
+
+/// 设置全局隐私等级。
+///
+/// 写到 `settings` 而不是各页面自己的状态里：三条提示词管线都读同一个值，
+/// 用户不必、也不该在三个地方分别维护「AI 能看到什么」。
+#[tauri::command]
+pub async fn privacy_set(db: State<'_, Db>, level: PrivacyLevel) -> AppResult<PrivacyLevel> {
+    let saved = settings::write_privacy(&db, level).await?;
+    tracing::info!(level = saved.as_str(), "全局隐私等级已更新");
+    Ok(saved)
+}
+
 // ------------------------------------------------------------------ 生成提示词
 
 #[derive(Debug, Deserialize)]
 pub struct BuildLiveRequest {
-    /// 模板 id；给了 `body` 时可省略（预览未保存的正文）
+    /// 模板 id。**必填**：编辑器实时预览已随重构去掉，不再有「未保存的正文」这条路
     #[serde(default)]
     pub template_id: Option<String>,
-    #[serde(default)]
-    pub body: Option<String>,
     #[serde(default)]
     pub privacy: Option<PrivacyLevel>,
     #[serde(default)]
@@ -158,18 +182,19 @@ pub async fn prompt_build_live(
     vault: State<'_, Vault>,
     request: BuildLiveRequest,
 ) -> AppResult<PromptOutput> {
-    let level = request.privacy.unwrap_or_default();
-    let template = resolve_template(
-        &db,
-        request.template_id.as_deref(),
-        request.body,
-        TemplateKind::Live,
-    )
-    .await?;
+    // 未显式指定时读**全局设置**：这样「隐私等级全局生效」是结构性保证——
+    // 某个页面忘了传，也不会掉回一个跟设置页不一致的等级。
+    let level = match request.privacy {
+        Some(level) => level,
+        None => settings::read_privacy(&db).await?,
+    };
+    let template = resolve_template(&db, request.template_id.as_deref()).await?;
 
     if template.kind != TemplateKind::Live {
+        // 别写死「它是复盘模板」：现在有三类（实盘 / 复盘 / 行情），
+        // 把一个行情模板说成复盘模板，只会让人以为是自己选错了分类。
         return Err(AppError::Config(format!(
-            "模板「{}」是复盘模板，不能用于实盘",
+            "模板「{}」不是实盘模板，不能用于实盘",
             template.name
         )));
     }
@@ -228,10 +253,9 @@ pub async fn prompt_build_live(
 
 #[derive(Debug, Deserialize)]
 pub struct BuildReviewRequest {
+    /// 模板 id。**必填**，理由同 `BuildLiveRequest`
     #[serde(default)]
     pub template_id: Option<String>,
-    #[serde(default)]
-    pub body: Option<String>,
     #[serde(default)]
     pub privacy: Option<PrivacyLevel>,
     #[serde(default)]
@@ -259,18 +283,15 @@ pub async fn prompt_build_review(
         return Err(AppError::RangeTooLarge);
     }
 
-    let level = request.privacy.unwrap_or_default();
-    let template = resolve_template(
-        &db,
-        request.template_id.as_deref(),
-        request.body,
-        TemplateKind::Review,
-    )
-    .await?;
+    let level = match request.privacy {
+        Some(level) => level,
+        None => settings::read_privacy(&db).await?,
+    };
+    let template = resolve_template(&db, request.template_id.as_deref()).await?;
 
     if template.kind != TemplateKind::Review {
         return Err(AppError::Config(format!(
-            "模板「{}」是实盘模板，不能用于复盘",
+            "模板「{}」不是复盘模板，不能用于复盘",
             template.name
         )));
     }
@@ -298,31 +319,16 @@ pub async fn prompt_build_review(
 
 /// 解析要用的模板：显式 `body`（编辑器预览）优先，否则按 id 查库、再查内置。
 ///
-/// `kind` 只在 `body` 分支用到：命令层已经知道自己在生成哪一类提示词，
-/// 用它给「未保存的模板」一个正确的类型，否则类型校验会误拒。
+/// 模板的类型来自**模板自身**（内置模板编译期就带着，用户模板存在库里），
+/// 所以这里不需要调用方再传一个类型兜底——类型校验由各命令在拿到模板后自己做。
 ///
-/// 对 crate 内可见：行情命令复用同一条解析路径——「内置在前、用户在后、
-/// 内置 id 当作另存为」这些语义只能有一份实现。
+/// 对 crate 内可见：行情命令复用同一条解析路径——「内置优先、用户库兜底」
+/// 这些语义只能有一份实现。
 pub(crate) async fn resolve_template(
     db: &Db,
     template_id: Option<&str>,
-    body: Option<String>,
-    kind: TemplateKind,
 ) -> AppResult<PromptTemplate> {
-    if let Some(body) = body {
-        return Ok(PromptTemplate {
-            id: String::new(),
-            name: "（未保存的模板）".to_string(),
-            description: String::new(),
-            kind,
-            body,
-            builtin: false,
-            updated_at: 0,
-        });
-    }
-
-    let id =
-        template_id.ok_or_else(|| AppError::Config("必须提供 template_id 或 body".to_string()))?;
+    let id = template_id.ok_or_else(|| AppError::Config("必须提供 template_id".to_string()))?;
 
     if let Some(builtin) = templates::builtin(id) {
         return Ok(builtin);
@@ -395,50 +401,15 @@ mod tests {
         Db::open_in_memory().await.expect("内存库创建失败")
     }
 
-    /// 预览未保存的正文时，类型必须来自**调用方**，否则命令层的类型校验会误拒。
-    #[tokio::test]
-    async fn preview_body_takes_the_callers_kind() {
-        let db = memory_db().await;
-
-        let review = resolve_template(
-            &db,
-            None,
-            Some("# 复盘模板".to_string()),
-            TemplateKind::Review,
-        )
-        .await
-        .expect("应能解析");
-        assert_eq!(
-            review.kind,
-            TemplateKind::Review,
-            "复盘预览必须得到 Review 类型，否则会被 prompt_build_review 的类型校验误拒"
-        );
-
-        let live = resolve_template(
-            &db,
-            None,
-            Some("# 实盘模板".to_string()),
-            TemplateKind::Live,
-        )
-        .await
-        .expect("应能解析");
-        assert_eq!(live.kind, TemplateKind::Live);
-    }
-
-    /// 已保存的模板（内置或用户）类型来自自身，**不该被调用方的兜底值覆盖**。
-    /// 否则一个实盘模板会被当成复盘模板渲染，用户看到的是莫名其妙的错误。
+    /// 已保存的模板（内置或用户）类型来自**自身**。
+    /// 若由调用方决定，一个实盘模板会被当成复盘模板渲染，用户看到的是莫名其妙的错误。
     #[tokio::test]
     async fn saved_templates_keep_their_own_kind() {
         let db = memory_db().await;
 
-        let builtin = resolve_template(
-            &db,
-            Some("review_performance"),
-            None,
-            TemplateKind::Live, // 故意传错：不该生效
-        )
-        .await
-        .expect("内置模板应存在");
+        let builtin = resolve_template(&db, Some("review_performance"))
+            .await
+            .expect("内置模板应存在");
         assert_eq!(
             builtin.kind,
             TemplateKind::Review,
@@ -449,7 +420,7 @@ mod tests {
     #[tokio::test]
     async fn missing_template_is_an_error_with_the_id() {
         let db = memory_db().await;
-        let err = resolve_template(&db, Some("nope"), None, TemplateKind::Live)
+        let err = resolve_template(&db, Some("nope"))
             .await
             .expect_err("不存在的模板应当报错");
         assert!(err.to_string().contains("nope"), "错误里应带上 id：{err}");
@@ -470,7 +441,7 @@ mod tests {
         };
         db.upsert_prompt_template(&row).await.expect("写入失败");
 
-        let loaded = resolve_template(&db, Some("user_test_1"), None, TemplateKind::Live)
+        let loaded = resolve_template(&db, Some("user_test_1"))
             .await
             .expect("应能读回");
         assert_eq!(loaded.name, "我的模板");

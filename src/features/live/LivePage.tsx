@@ -7,8 +7,13 @@
  * 页面本身不含业务逻辑：所有数据来自 Rust（`live_refresh`），
  * 所有文案来自 `lib/strings.ts`。
  */
+import { useState } from "react";
+
 import { S } from "../../lib/strings";
 import type { LiveSnapshot } from "../../lib/types";
+import { useCredentials } from "../account/useAccountSnapshot";
+import { LiveContextPanel } from "../prompt/LiveContextPanel";
+import { PromptPanel } from "../prompt/PromptPanel";
 import { errorPayloadOf } from "./errors";
 import { formatLocalTime, formatRelativeTime } from "./format";
 import { MarketStateCard } from "./MarketStateCard";
@@ -102,10 +107,16 @@ function Placeholder({ title, hint }: { title: string; hint: string }) {
   );
 }
 
-export function LivePage() {
+export function LivePage({ onOpenLibrary }: { onOpenLibrary?: () => void } = {}) {
   const query = useLiveSnapshot();
   const refresh = useForceRefresh();
   const now = useNow();
+
+  // 生成提示词的上下文：凭据（可空 → 只分析行情）+ 是否绕过行情缓存。
+  // 这两个值同时被「生成」与「刷新」用到，所以放在页面级状态里而不是面板内部。
+  const credentialsQuery = useCredentials();
+  const [credentialId, setCredentialId] = useState<string | null>(null);
+  const [force, setForce] = useState(false);
 
   const snapshot = query.data;
   const fatalError = query.isError && snapshot === undefined ? query.error : undefined;
@@ -171,6 +182,23 @@ export function LivePage() {
           )}
         </>
       )}
+
+      <LiveContextPanel
+        credentials={{
+          list: credentialsQuery.data ?? [],
+          isPending: credentialsQuery.isPending,
+          isError: credentialsQuery.isError,
+        }}
+        credentialId={credentialId}
+        onCredential={setCredentialId}
+        force={force}
+        onForce={setForce}
+      />
+
+      <PromptPanel
+        context={{ kind: "live", credentialId, force }}
+        onOpenLibrary={onOpenLibrary}
+      />
     </main>
   );
 }

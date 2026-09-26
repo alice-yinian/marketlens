@@ -20,12 +20,13 @@ import { useCredentials } from "../account/useAccountSnapshot";
 import { errorPayloadOf } from "../live/errors";
 import { S } from "../../lib/strings";
 import type { CredentialMeta, ExecutionReport, ReviewContext } from "../../lib/types";
+import { PromptPanel } from "../prompt/PromptPanel";
 import { PlanPreview } from "./PlanPreview";
 import { ProgressBar } from "./ProgressBar";
 import { RangePicker } from "./RangePicker";
 import { ReviewResult } from "./ReviewResult";
 import { SeriesReportList } from "./SeriesReportList";
-import { formatDurationMs, rangeError } from "./format";
+import { formatDurationMs, rangeError, rangeProblemText } from "./format";
 import { useReviewContext } from "./useReviewContext";
 import { useReviewFetch } from "./useReviewFetch";
 import { useReviewPlan } from "./useReviewPlan";
@@ -166,7 +167,10 @@ function AssemblePanel({
   );
 }
 
-export function ReviewPage({ onConfigure }: { onConfigure?: () => void } = {}) {
+export function ReviewPage({
+  onConfigure,
+  onOpenLibrary,
+}: { onConfigure?: () => void; onOpenLibrary?: () => void } = {}) {
   const [range, setRange] = useState(() => {
     const now = Date.now();
     return { from: now - 7 * DAY_MS, to: now, bar: "1H" };
@@ -208,7 +212,8 @@ export function ReviewPage({ onConfigure }: { onConfigure?: () => void } = {}) {
   const contextPayload = contextError == null ? null : errorPayloadOf(contextError);
   const context: ReviewContext | null = contextMutation.data ?? null;
 
-  const rangeOk = rangeError(range.from, range.to) === null;
+  const rangeProblem = rangeError(range.from, range.to);
+  const rangeOk = rangeProblem === null;
 
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-5 p-4 sm:p-6">
@@ -290,6 +295,20 @@ export function ReviewPage({ onConfigure }: { onConfigure?: () => void } = {}) {
       )}
 
       {context === null ? null : <ReviewResult context={context} />}
+
+      {/* 生成提示词用的是本页**同一套**凭据与时段：两处各存一份状态迟早会不一致 */}
+      <PromptPanel
+        context={{
+          kind: "review",
+          credentialId: selectedId,
+          from: range.from,
+          to: range.to,
+          bar: range.bar,
+        }}
+        onOpenLibrary={onOpenLibrary}
+        // 时段不合法时，这一页的三个动作必须给出一致反应（见 PromptPanel 的说明）
+        blockedReason={rangeProblem === null ? null : rangeProblemText(rangeProblem)}
+      />
     </main>
   );
 }

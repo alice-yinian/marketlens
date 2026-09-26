@@ -29,6 +29,25 @@ pub fn render(body: &str, context: &serde_json::Value) -> AppResult<String> {
         .map_err(|err| AppError::Template(format!("渲染失败：{err}")))
 }
 
+/// 只解析模板语法，并列出它引用了哪些变量——**不渲染，因此不需要上下文**。
+///
+/// 与 [`render`] 分开是刻意的：渲染必须要有上下文（缺变量直接报错），
+/// 而模板管理页需要的恰恰是「这段正文语法有没有问题」这个**不需要数据**的判断。
+/// 用渲染去实现它，就得凭空造一份假上下文——那会让「语法没问题」和
+/// 「变量名恰好和假上下文对得上」两件事混在一起。
+pub fn check(body: &str) -> AppResult<Vec<String>> {
+    let environment = environment();
+
+    let template = environment
+        .template_from_str(body)
+        .map_err(|err| AppError::Template(format!("模板语法错误：{err}")))?;
+
+    // 顺带把引用的变量列出来给作者看：写模板时最常问的就是「这个变量叫什么」。
+    let mut names: Vec<String> = template.undeclared_variables(false).into_iter().collect();
+    names.sort();
+    Ok(names)
+}
+
 /// 渲染前把「模板引用了哪些上下文里没有的变量」一次性列全。
 ///
 /// minijinja 自带的严格模式报错是 `undefined value (in <string>:1)`——**不说哪个变量**。
@@ -77,6 +96,32 @@ fn environment() -> Environment<'static> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// 语法校验：**不需要上下文**，这正是它与 `render` 的分工。
+    #[test]
+    fn check_reports_syntax_errors_without_a_context() {
+        let err = check("{% for x in %}").expect_err("语法错误必须报错");
+        let message = err.to_string();
+        assert!(message.contains("语法"), "要说清是语法问题：{message}");
+    }
+
+    /// 校验通过时列出引用的变量——写模板时最常问的就是「这个变量叫什么」。
+    #[test]
+    fn check_lists_referenced_variables() {
+        let names = check("{{ meta.generated_at }} {{ positions | length }} {% if account %}{{ account.equity }}{% endif %}")
+            .expect("应能通过");
+        assert_eq!(
+            names,
+            vec!["account", "meta", "positions"],
+            "变量名排序稳定：{names:?}"
+        );
+    }
+
+    /// 空正文不是语法错误（用户刚清空编辑器时不该报红）。
+    #[test]
+    fn check_accepts_an_empty_body() {
+        assert!(check("").expect("空正文应通过").is_empty());
+    }
 
     #[test]
     fn renders_simple_substitution() {

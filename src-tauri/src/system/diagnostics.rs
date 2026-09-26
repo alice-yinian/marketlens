@@ -146,7 +146,7 @@ pub async fn build(
 /// `proxy` 就是这条规则救下的第一个真实例子：它的 URL 可以带 `user:pass`，
 /// 因此**刻意不进白名单**。需要看代理的人自己知道填了什么，诊断包里不需要它。
 async fn settings_snapshot(db: &Db) -> AppResult<Vec<SettingEntry>> {
-    const WHITELIST: &[&str] = &["watchlist", "onboarding_done"];
+    const WHITELIST: &[&str] = &["watchlist", "onboarding_done", "privacy_level"];
 
     let mut entries = Vec::new();
     for key in WHITELIST {

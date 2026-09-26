@@ -22,12 +22,19 @@ function ErrorBar({ error }: { error: unknown }) {
       </div>
     );
   }
+  // 标题与提示按**错误来源**区分：这个面板现在承接的失败远不只模板问题
+  // （缺凭据、时段超限、网络……），把「本机还没配 OKX 凭据」说成「模板渲染失败」
+  // 会把人引到完全错误的方向去。
+  const templateProblem = payload.code === "Template";
+
   return (
     <div className="rounded-lg border border-red-900/60 bg-red-950/30 p-3">
       <p className="text-xs font-medium text-red-300">{S.prompt.preview.errorTitle}</p>
       {/* 原样展示后端消息：变量名与语法位置都在里面 */}
       <p className="mt-1 font-mono text-xs break-all text-red-200/90">{payload.message}</p>
-      <p className="mt-1 text-[11px] text-red-300/70">{S.prompt.preview.errorHint}</p>
+      <p className="mt-1 text-[11px] text-red-300/70">
+        {templateProblem ? S.prompt.preview.errorHintTemplate : S.prompt.preview.errorHintOther}
+      </p>
       <p className="mt-1 text-[11px] text-red-300/60">
         {S.account.errorCode(payload.code)}
       </p>

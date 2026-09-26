@@ -1,96 +1,32 @@
+/**
+ * 提示词库纯函数测试：保存前的本地校验、另存为命名、导出文件名、预览统计。
+ *
+ * 隐私等级与时段校验**不在这个模块**：隐私属于设置页（`features/settings/format.ts`），
+ * 时段校验属于复盘页（`features/review/format.ts`）——同一个概念只留一份实现，
+ * 所以这里不为它们留任何用例。
+ */
 import { describe, expect, it } from "vitest";
 
 import { S } from "../../lib/strings";
 import {
-  DEFAULT_PRIVACY,
-  MAX_RANGE_MS,
-  PRIVACY_LEVELS,
   exportFileName,
-  localInputToMs,
-  msToLocalInput,
   outputStats,
-  privacyDescription,
-  privacyLabel,
-  rangeDays,
-  rangeError,
-  rangeProblemText,
   saveAsName,
   templateProblem,
+  templateProblemText,
 } from "./format";
-
-describe("隐私等级", () => {
-  it("三档齐全，默认 L1", () => {
-    expect(PRIVACY_LEVELS).toEqual(["L0", "L1", "L2"]);
-    expect(DEFAULT_PRIVACY).toBe("L1");
-  });
-
-  it("每档都有名称与「做了什么」的人话说明，且互不相同", () => {
-    const descs = PRIVACY_LEVELS.map((level) => {
-      const desc = privacyDescription(level);
-      expect(desc.length).toBeGreaterThan(0);
-      expect(privacyLabel(level)).toContain(level);
-      return desc;
-    });
-    const [l0, l1, l2] = descs;
-    expect(l0).not.toBe(l1);
-    expect(l1).not.toBe(l2);
-    expect(l0).not.toBe(l2);
-    // L0 必须明确写出会带完整金额
-    expect(privacyDescription("L0")).toBe(S.prompt.privacy.L0.desc);
-    expect(privacyDescription("L0")).toContain("完整金额");
-    // L2 必须明确不含金额与数量
-    expect(privacyDescription("L2")).toContain("不含任何金额与数量");
-  });
-});
-
-describe("rangeError / rangeDays", () => {
-  const now = 1_700_000_000_000;
-
-  it("正常时段返回 null", () => {
-    expect(rangeError(now - 7 * 24 * 3600_000, now)).toBeNull();
-  });
-
-  it("顺序错误、非有限、超 90 天各自归类", () => {
-    expect(rangeError(now, now)).toBe("order");
-    expect(rangeError(now + 1, now)).toBe("order");
-    expect(rangeError(Number.NaN, now)).toBe("invalid");
-    expect(rangeError(now - MAX_RANGE_MS - 1, now)).toBe("tooLarge");
-  });
-
-  it("90 天整不超限，超过 1 毫秒即超限", () => {
-    expect(rangeError(now - MAX_RANGE_MS, now)).toBeNull();
-    expect(rangeError(now - MAX_RANGE_MS - 1, now)).toBe("tooLarge");
-  });
-
-  it("超限文案友好，且不是错误码", () => {
-    expect(rangeProblemText("tooLarge")).toContain("90 天");
-    expect(rangeProblemText("tooLarge")).not.toContain("RangeTooLarge");
-  });
-
-  it("天数向上取整", () => {
-    expect(rangeDays(now, now + 24 * 3600_000)).toBe(1);
-    expect(rangeDays(now, now + 24 * 3600_000 + 1)).toBe(2);
-    expect(rangeDays(now, now)).toBe(0);
-  });
-});
-
-describe("datetime-local 往返", () => {
-  it("毫秒 → 本地字符串 → 毫秒（分钟精度）", () => {
-    const ms = new Date(2026, 0, 2, 3, 4).getTime();
-    expect(localInputToMs(msToLocalInput(ms))).toBe(ms);
-  });
-
-  it("空值与非法值返回 null", () => {
-    expect(localInputToMs("")).toBeNull();
-    expect(localInputToMs("not-a-date")).toBeNull();
-  });
-});
 
 describe("模板保存校验与另存为命名", () => {
   it("名称或正文去空白后为空都算问题", () => {
     expect(templateProblem("  ", "body")).toBe("nameRequired");
     expect(templateProblem("name", " \n ")).toBe("bodyRequired");
     expect(templateProblem("name", "body")).toBeNull();
+  });
+
+  it("问题码有人话说明（不是把码直接摊给用户）", () => {
+    expect(templateProblemText("nameRequired")).toBe(S.prompt.actions.nameRequired);
+    expect(templateProblemText("bodyRequired")).toBe(S.prompt.actions.bodyRequired);
+    expect(templateProblemText("nameRequired")).not.toContain("nameRequired");
   });
 
   it("从同名内置模板另存为时追加副本后缀", () => {
@@ -124,8 +60,8 @@ describe("outputStats", () => {
   });
 
   it("非有限值回落为 0（不显示 NaN）", () => {
-    expect(outputStats({ token_estimate: Number.NaN, char_count: Number.POSITIVE_INFINITY })).toEqual(
-      { tokens: 0, chars: 0 },
-    );
+    expect(
+      outputStats({ token_estimate: Number.NaN, char_count: Number.POSITIVE_INFINITY }),
+    ).toEqual({ tokens: 0, chars: 0 });
   });
 });

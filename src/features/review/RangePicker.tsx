@@ -5,7 +5,15 @@
  * 而不是让后端返回错误码再解释——更不会静默把时段改小。
  */
 import { S } from "../../lib/strings";
-import { BAR_OPTIONS, barLabel, localInputToMs, msToLocalInput, rangeDays, rangeError } from "./format";
+import {
+  BAR_OPTIONS,
+  barLabel,
+  localInputToMs,
+  msToLocalInput,
+  rangeDays,
+  rangeError,
+  rangeProblemText,
+} from "./format";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -106,13 +114,7 @@ export function RangePicker({
 
       <p className="mt-3 text-xs text-neutral-500">{S.review.range.maxRangeNote}</p>
       {problem === null ? null : (
-        <p className="mt-1 text-xs text-amber-300">
-          {problem === "order"
-            ? S.review.range.orderInvalid
-            : problem === "tooLarge"
-              ? S.review.range.tooLarge
-              : S.review.range.invalid}
-        </p>
+        <p className="mt-1 text-xs text-amber-300">{rangeProblemText(problem)}</p>
       )}
 
       <button

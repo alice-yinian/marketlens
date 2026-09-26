@@ -10,7 +10,15 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { CredentialMeta, ExecutionReport, FetchPlan, Progress, ReviewContext } from "../../lib/types";
+import type {
+  CredentialMeta,
+  ExecutionReport,
+  FetchPlan,
+  Progress,
+  PromptOutput,
+  PromptTemplate,
+  ReviewContext,
+} from "../../lib/types";
 
 const callMock = vi.fn();
 const onFetchProgressMock = vi.fn();
@@ -20,7 +28,7 @@ vi.mock("../../lib/ipc", () => ({
 }));
 
 import { S } from "../../lib/strings";
-import { MAX_RANGE_MS, msToLocalInput } from "./format";
+import { MAX_RANGE_MS, localInputToMs, msToLocalInput } from "./format";
 import { ReviewPage } from "./ReviewPage";
 
 declare global {
@@ -102,6 +110,33 @@ function credentialOf(overrides: Partial<CredentialMeta> = {}): CredentialMeta {
     last_ok_at: null,
     last_error: null,
     created_at: 1_700_000_000_000,
+    ...overrides,
+  };
+}
+
+function reviewTemplateOf(overrides: Partial<PromptTemplate> = {}): PromptTemplate {
+  return {
+    id: "review_performance",
+    name: "复盘：绩效与归因",
+    description: "统计 + 归因",
+    kind: "review",
+    body: "REVIEW BODY {{ stats.win_rate }}",
+    builtin: true,
+    updated_at: 0,
+    ...overrides,
+  };
+}
+
+function promptOutputOf(overrides: Partial<PromptOutput> = {}): PromptOutput {
+  return {
+    text: "PROMPT TEXT",
+    token_estimate: 123,
+    char_count: 456,
+    privacy: "L1",
+    template_id: "review_performance",
+    template_name: "复盘：绩效与归因",
+    warnings: [],
+    generated_at: 1_700_000_000_000,
     ...overrides,
   };
 }
@@ -553,5 +588,59 @@ describe("ReviewPage", () => {
     // 采集流程仍然可用
     await click(button(host, S.review.plan.generate));
     expect(hasButton(host, S.review.plan.start)).toBe(true);
+  });
+
+  it("生成区用的是本页的凭据与时段，不另存一份状态", async () => {
+    callMock.mockImplementation((cmd: string) => {
+      if (cmd === "credentials_list") return Promise.resolve([credentialOf()]);
+      if (cmd === "template_list") return Promise.resolve([reviewTemplateOf()]);
+      if (cmd === "privacy_get") return Promise.resolve("L1");
+      if (cmd === "prompt_build_review") return Promise.resolve(promptOutputOf());
+      return Promise.reject(new Error("unexpected"));
+    });
+
+    const host = await renderPage();
+
+    // 在页面的时段控件上改成固定值，再从 DOM 读回来当期望值——
+    // 期望值不另写一份「默认时段」，否则两边会一起错。
+    const fromMs = new Date(2026, 5, 1, 8, 0).getTime();
+    const toMs = new Date(2026, 5, 3, 20, 0).getTime();
+    const localInputs = [...host.querySelectorAll('input[type="datetime-local"]')];
+    const fromInput = localInputs[0];
+    const toInput = localInputs[1];
+    if (!(fromInput instanceof HTMLInputElement) || !(toInput instanceof HTMLInputElement)) {
+      throw new Error("时段输入未渲染");
+    }
+    await act(async () => {
+      setInputValue(fromInput, msToLocalInput(fromMs));
+      setInputValue(toInput, msToLocalInput(toMs));
+    });
+    await flush();
+
+    // 页面上只有 RangePicker 有粒度下拉（装配区只有一条凭据时不是下拉），DOM 顺序即它
+    const barSelect = host.querySelector("select");
+    if (!(barSelect instanceof HTMLSelectElement)) throw new Error("粒度下拉未渲染");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+      setter?.call(barSelect, "4H");
+      barSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+
+    await click(button(host, S.prompt.generate.run));
+
+    expect(localInputToMs(fromInput.value)).toBe(fromMs);
+    expect(localInputToMs(toInput.value)).toBe(toMs);
+    expect(callMock).toHaveBeenCalledWith("prompt_build_review", {
+      request: {
+        template_id: "review_performance",
+        privacy: "L1",
+        credential_id: credentialOf().id,
+        from: localInputToMs(fromInput.value),
+        to: localInputToMs(toInput.value),
+        bar: "4H",
+      },
+    });
+    expect(host.textContent).toContain(promptOutputOf().text);
   });
 });

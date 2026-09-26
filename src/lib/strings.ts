@@ -419,16 +419,16 @@ export const S = {
       title: "时段与粒度",
       from: "开始时间",
       to: "结束时间",
-      quick: "快捷时段",
       last24h: "最近 24 小时",
+      quick: "快捷时段",
       last7d: "最近 7 天",
       last30d: "最近 30 天",
-      bar: "K 线粒度",
+      rangeDays: (days: number) => `当前约 ${days} 天`,
       maxRangeNote: "时段上限 90 天：超出后无法生成计划（不会自动截断时段）。",
+      bar: "K 线粒度",
       tooLarge: "当前时段超过 90 天上限。请缩小范围——本工具不会静默截断时段。",
       orderInvalid: "结束时间必须晚于开始时间。",
       invalid: "请选择有效的开始与结束时间。",
-      rangeDays: (days: number) => `当前约 ${days} 天`,
     },
 
     // 计划预估
@@ -612,8 +612,28 @@ export const S = {
 
   // 提示词页（M5）：模板库 + 隐私分级 + 编辑器 + 实时预览 + 导出
   prompt: {
-    title: "提示词",
-    subtitle: "选模板 · 控隐私 · 预览后复制或导出",
+    title: "提示词库",
+    subtitle: "管理全部提示词模板（实盘 / 复盘 / 行情）——生成提示词在各自的页面",
+
+    // 各页面里的「生成提示词」区（实盘页 / 复盘页共用）
+    generate: {
+      title: "生成提示词",
+      subtitle: "选一个模板，用当前页面的上下文生成一份可直接粘给 AI 的提示词",
+      template: "模板",
+      noTemplate:
+        "还没有这一类模板：可以到「提示词库」新建一个，或把内置模板「另存为」一份副本。",
+      privacyNote: (label: string) => `隐私等级：${label}（在设置页统一调整）`,
+      run: "生成提示词",
+      running: "生成中…",
+      manage: "管理模板",
+    },
+
+    // 模板语法校验（编辑模板时；不需要上下文，因此也不联网）
+    check: {
+      ok: (count: number) => `语法正常，引用了 ${count} 个变量。`,
+      variables: (names: string) => `引用变量：${names}`,
+      errorTitle: "模板语法错误",
+    },
 
     // 模板库
     templates: {
@@ -630,17 +650,6 @@ export const S = {
       builtinNote: "内置模板由应用维护，升级时会被更新；改动请用「另存为」。",
     },
 
-    // 隐私等级（本页最重要的控件）
-    privacy: {
-      title: "隐私等级",
-      enforcedNote:
-        "隐私分级在后端强制生效：无论模板怎么写，都无法绕过它把金额带进提示词。切等级会立即重新生成预览。",
-      current: (label: string) => `当前：${label}`,
-      L0: { label: "L0 · 全量", desc: "完整金额与数量都会进入提示词" },
-      L1: { label: "L1 · 百分比（默认）", desc: "金额转成占账户权益的百分比，权益只给量级区间" },
-      L2: { label: "L2 · 脱敏", desc: "只保留方向、杠杆与市场状态，不含任何金额与数量" },
-    },
-
     // 模板编辑器
     editor: {
       title: "模板编辑器",
@@ -650,6 +659,9 @@ export const S = {
       descriptionPlaceholder: "一句话说明这个模板问什么",
       body: "模板正文",
       builtinHint: "内置模板不可直接保存，改动请用「另存为」创建副本。",
+      checkTitle: "语法校验",
+      checkEmpty: "正文为空时不做校验。",
+      checking: "校验中…",
       dirty: "有未保存的改动",
     },
 
@@ -682,17 +694,7 @@ export const S = {
       credentialError: "凭据列表读取失败。",
       force: "强制刷新（跳过行情 30 秒缓存）",
       forceNote: "开启后每次重新生成都会重新联网拉取行情。",
-      rangeFrom: "开始时间",
-      rangeTo: "结束时间",
-      rangeBar: "K 线粒度",
-      quick: "快捷时段",
-      last7d: "最近 7 天",
-      last30d: "最近 30 天",
-      rangeDays: (days: number) => `当前约 ${days} 天`,
-      maxRangeNote: "时段上限 90 天。",
       rangeTooLarge: "当前时段超过 90 天上限。请缩小范围——本工具不会静默截断时段。",
-      rangeOrder: "结束时间必须晚于开始时间。",
-      rangeInvalid: "请选择有效的开始与结束时间。",
       needCredential: "复盘需要读取官方历史仓位，必须选择凭据。",
     },
 
@@ -708,8 +710,10 @@ export const S = {
       tokenNote: "token 估算为保守高估（中文约 1 token/字，ASCII 约 4 字符/token）。",
       warningsTitle: "生成过程中的问题",
       warningsHint: "以下问题不致命，但说明提示词里可能缺少部分信息，请留意。",
-      errorTitle: "模板渲染失败",
-      errorHint: "请按上面的报错修改模板：变量名与语法位置都在消息里，这是唯一的线索。",
+      errorTitle: "生成失败",
+      errorHintTemplate:
+        "请按上面的报错修改模板：变量名与语法位置都在消息里，这是唯一的线索。",
+      errorHintOther: "这条不是模板问题（看错误代码）：消息里已写明缺什么，照它处理即可。",
       rangeTooLargeTitle: "时段超出上限",
       generatedAt: (time: string) => `生成于 ${time}`,
       templateName: (name: string) => `模板：${name}`,
@@ -744,6 +748,19 @@ export const S = {
   settings: {
     title: "设置",
     subtitle: "网络代理 · 缓存管理 · 诊断导出 · 版本信息",
+
+    // 隐私等级（全局）：实盘 / 复盘 / 行情三条管线都读它
+    privacy: {
+      title: "隐私等级",
+      subtitle: "全局生效：三条提示词管线用同一个等级，不必在各页面分别维护",
+      enforcedNote:
+        "隐私分级在后端强制生效：无论模板怎么写，都无法绕过它把金额带进提示词。改完等级，各页面的提示词会按新等级重新生成。",
+      current: (label: string) => `当前：${label}`,
+      saveFailed: "隐私等级保存失败，请重试。",
+      L0: { label: "L0 · 全量", desc: "完整金额与数量都会进入提示词" },
+      L1: { label: "L1 · 百分比（默认）", desc: "金额转成占账户权益的百分比，权益只给量级区间" },
+      L2: { label: "L2 · 脱敏", desc: "只保留方向、杠杆与市场状态，不含任何金额与数量" },
+    },
 
     // 0) 网络代理（引导里配过一次，这里是随时可改的入口）
     proxy: {

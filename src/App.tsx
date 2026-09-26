@@ -57,11 +57,12 @@ function VersionFooter() {
 
 type Tab = "live" | "kline" | "account" | "review" | "prompt" | "settings";
 
+// 顺序即工作流：先看当下（实盘 / 行情），再回头看（复盘），然后才是配置类页面。
 const TABS: readonly { id: Tab; label: string }[] = [
   { id: "live", label: S.nav.live },
   { id: "kline", label: S.nav.kline },
-  { id: "account", label: S.nav.account },
   { id: "review", label: S.nav.review },
+  { id: "account", label: S.nav.account },
   { id: "prompt", label: S.nav.prompt },
   { id: "settings", label: S.nav.settings },
 ];
@@ -124,10 +125,13 @@ function MainShell({
         </button>
       </nav>
       <div className="flex-1">
-        {panel("live", <LivePage />)}
+        {panel("live", <LivePage onOpenLibrary={() => selectTab("prompt")} />)}
         {panel("kline", <KlinePage />)}
         {panel("account", <AccountPage onConfigure={onConfigure} />)}
-        {panel("review", <ReviewPage onConfigure={onConfigure} />)}
+        {panel(
+          "review",
+          <ReviewPage onConfigure={onConfigure} onOpenLibrary={() => selectTab("prompt")} />,
+        )}
         {panel("prompt", <PromptPage />)}
         {panel("settings", <SettingsPage />)}
       </div>

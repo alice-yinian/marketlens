@@ -6,7 +6,7 @@
  * 刻意不在这里做任何推断（比如「应该释放了多少」）——拿不到就不说。
  */
 import { S } from "../../lib/strings";
-import type { DeletedRows, RedactionNote, TableStat } from "../../lib/types";
+import type { DeletedRows, PrivacyLevel, RedactionNote, TableStat } from "../../lib/types";
 
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 
@@ -84,4 +84,42 @@ export function cleanupFreedText(bytesBefore: number, bytesAfter: number): strin
 export function redactionLines(redactions: RedactionNote[]): string[] {
   if (redactions.length === 0) return [S.settings.diagnostics.redactionNone];
   return redactions.map((note) => S.settings.diagnostics.redactionHit(note.pattern, note.hits));
+}
+
+/** 隐私等级顺序（界面按此顺序展示）。 */
+export const PRIVACY_LEVELS: readonly PrivacyLevel[] = ["L0", "L1", "L2"];
+
+/**
+ * 默认隐私等级：L1。
+ *
+ * 与 Rust 侧 `PrivacyLevel::default()` 必须一致——前端在后端的值还没读到之前
+ * 先用它，两边不一致会导致「首屏用 L1、读回来是别的」这种一闪而过的不一致。
+ */
+export const DEFAULT_PRIVACY: PrivacyLevel = "L1";
+
+/** 隐私等级 → 名称（含编号） */
+export function privacyLabel(level: PrivacyLevel): string {
+  return S.settings.privacy[level].label;
+}
+
+/** 隐私等级 → 一句人话说明它到底做了什么 */
+export function privacyDescription(level: PrivacyLevel): string {
+  return S.settings.privacy[level].desc;
+}
+
+/**
+ * 隐私等级的视觉呈现。
+ * L0 用琥珀色（「会带出完整金额」需要被看见），L1 中性，L2 绿色（最安全）。
+ */
+export function privacyBadgeClass(level: PrivacyLevel, active: boolean): string {
+  const base = "flex w-full flex-col items-start gap-1 rounded-lg border px-3 py-2 text-left";
+  if (!active) {
+    return `${base} border-neutral-800 bg-neutral-900/40 text-neutral-400 hover:border-neutral-700`;
+  }
+  const tones: Record<PrivacyLevel, string> = {
+    L0: "border-amber-800 bg-amber-950/40 text-amber-200",
+    L1: "border-neutral-500 bg-neutral-800 text-neutral-100",
+    L2: "border-emerald-800 bg-emerald-950/40 text-emerald-200",
+  };
+  return `${base} ${tones[level]}`;
 }

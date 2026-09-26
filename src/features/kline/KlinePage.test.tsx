@@ -629,7 +629,6 @@ describe("KlinePage 提示词与模板", () => {
       request: {
         plan_id: "plan-k1",
         template_id: "tpl-market",
-        body: null,
         indicators: [{ kind: "rsi", period: DEFAULT_PERIOD.rsi }],
       },
     });
@@ -660,6 +659,6 @@ describe("KlinePage 提示词与模板", () => {
     expect(host.textContent).toContain(S.prompt.preview.errorTitle);
     expect(host.textContent).toContain(S.account.errorCode("Template"));
     // 顺带给出「照着报错改模板」的指引，而不是只丢一行错误
-    expect(host.textContent).toContain(S.prompt.preview.errorHint);
+    expect(host.textContent).toContain(S.prompt.preview.errorHintTemplate);
   });
 });

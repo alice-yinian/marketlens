@@ -8,7 +8,8 @@
  * - `redactions` 为空显示对应文案；
  * - 字节数格式化为人类可读；
  * - 诊断结果展示路径 / 大小 / 凭据属性 / 版本信息；
- * - 代理「保存」必然伴随一次探测，而「清除」不做无谓的探测。
+ * - 代理「保存」必然伴随一次探测，而「清除」不做无谓的探测；
+ * - 隐私等级是全局设置：三档都渲染、点击写回 `privacy_set`、`privacy_get` 非默认值时正确标为选中。
  *
  * 只 mock IPC 出口（lib/ipc），页面与纯函数全部真实执行。
  */
@@ -81,6 +82,8 @@ function defaultMock(cmd: string): Promise<unknown> {
       return Promise.resolve(exportOf());
     case "proxy_get":
       return Promise.resolve({ url: null });
+    case "privacy_get":
+      return Promise.resolve("L1");
     default:
       return Promise.reject(new Error(`unexpected command: ${cmd}`));
   }
@@ -126,6 +129,15 @@ function button(host: HTMLElement, text: string): HTMLButtonElement {
 
 function hasButton(host: HTMLElement, text: string): boolean {
   return [...host.querySelectorAll("button")].some((b) => b.textContent === text);
+}
+
+/** 隐私档位按钮的内部是「名称 + 说明」两个 span，只能按包含匹配 */
+function buttonContaining(host: HTMLElement, text: string): HTMLButtonElement {
+  const found = [...host.querySelectorAll("button")].find((b) =>
+    (b.textContent ?? "").includes(text),
+  );
+  if (found === undefined) throw new Error(`按钮未渲染（包含）：${text}`);
+  return found as HTMLButtonElement;
 }
 
 async function click(target: HTMLElement) {
@@ -340,5 +352,51 @@ describe("SettingsPage 网络代理", () => {
     expect(input(host).value).toBe("");
     // 清除不该顺带发一次探测请求
     expect(callsOf("proxy_test")).toHaveLength(0);
+  });
+});
+
+describe("SettingsPage 隐私等级（全局）", () => {
+  const LEVELS = [S.settings.privacy.L0, S.settings.privacy.L1, S.settings.privacy.L2];
+
+  it("三档都渲染，并说清它对提示词做了什么、后端强制生效", async () => {
+    const host = await renderPage();
+
+    expect(host.textContent).toContain(S.settings.privacy.title);
+    expect(host.textContent).toContain(S.settings.privacy.enforcedNote);
+    for (const level of LEVELS) {
+      expect(host.textContent).toContain(level.label);
+      expect(host.textContent).toContain(level.desc);
+    }
+  });
+
+  it("点击某一档调用 privacy_set（入参就是那一档）并更新「当前」", async () => {
+    callMock.mockImplementation((cmd: string, args?: { level?: string }) => {
+      if (cmd === "privacy_set") return Promise.resolve(args?.level ?? null);
+      return defaultMock(cmd);
+    });
+    const host = await renderPage();
+
+    await click(buttonContaining(host, S.settings.privacy.L2.label));
+
+    expect(callMock).toHaveBeenCalledWith("privacy_set", { level: "L2" });
+    expect(host.textContent).toContain(
+      S.settings.privacy.current(S.settings.privacy.L2.label),
+    );
+  });
+
+  it("privacy_get 返回非 L1 时把那一档标为选中（不写死默认值）", async () => {
+    callMock.mockImplementation((cmd: string) =>
+      cmd === "privacy_get" ? Promise.resolve("L0") : defaultMock(cmd),
+    );
+    const host = await renderPage();
+
+    const pressed = (label: string) =>
+      buttonContaining(host, label).getAttribute("aria-pressed");
+    expect(pressed(S.settings.privacy.L0.label)).toBe("true");
+    expect(pressed(S.settings.privacy.L1.label)).toBe("false");
+    expect(pressed(S.settings.privacy.L2.label)).toBe("false");
+    expect(host.textContent).toContain(
+      S.settings.privacy.current(S.settings.privacy.L0.label),
+    );
   });
 });

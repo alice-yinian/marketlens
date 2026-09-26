@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /**
  * LivePage 的行为冒烟测试：新鲜度提示、warnings 优先于空态、
- * 「数据不可得」渲染、错误态的重试按钮门控、刷新按钮的 force 语义。
+ * 「数据不可得」渲染、错误态的重试按钮门控、刷新按钮的 force 语义，
+ * 以及页面自带的「生成提示词」区（凭据 / 强制刷新 / 模板下拉）。
  *
  * 只 mock IPC 出口（lib/ipc），页面自身逻辑全部真实执行。
  */
@@ -10,13 +11,19 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { LiveSnapshot, MarketState } from "../../lib/types";
+import type {
+  CredentialMeta,
+  LiveSnapshot,
+  MarketState,
+  PromptTemplate,
+} from "../../lib/types";
 
 const callMock = vi.fn();
 vi.mock("../../lib/ipc", () => ({
   call: (...args: unknown[]) => callMock(...args),
 }));
 
+import { S } from "../../lib/strings";
 import { LivePage } from "./LivePage";
 
 declare global {
@@ -65,6 +72,54 @@ function snapshotOf(overrides: Partial<LiveSnapshot> = {}): LiveSnapshot {
   };
 }
 
+function credentialOf(overrides: Partial<CredentialMeta> = {}): CredentialMeta {
+  return {
+    id: "cred-1",
+    label: "主账户只读",
+    env: "live",
+    api_key_masked: "abcd****ef12",
+    permissions: "read_only",
+    uid_masked: "1234****",
+    last_ok_at: null,
+    last_error: null,
+    created_at: 1_700_000_000_000,
+    ...overrides,
+  };
+}
+
+const LIVE_TEMPLATE: PromptTemplate = {
+  id: "live_quick",
+  name: "实盘速览",
+  description: "市场状态 + 当前持仓",
+  kind: "live",
+  body: "LIVE BODY {{ meta.generated_at }}",
+  builtin: true,
+  updated_at: 0,
+};
+
+/**
+ * 平铺的 IPC 桩。
+ *
+ * 页面现在除了行情快照，还要读凭据（实盘上下文）与模板 / 隐私等级（生成区），
+ * 所以按命令分派，而不是「一律返回同一份快照」——后者会让生成区拿到对象当列表用。
+ */
+function defaultMock(cmd: string): Promise<unknown> {
+  switch (cmd) {
+    case "live_refresh":
+      return Promise.resolve(snapshotOf());
+    case "credentials_list":
+      return Promise.resolve([credentialOf()]);
+    case "template_list":
+      return Promise.resolve([LIVE_TEMPLATE]);
+    case "privacy_get":
+      return Promise.resolve("L1");
+    case "prompt_build_live":
+      return Promise.resolve(null);
+    default:
+      return Promise.reject(new Error(`unexpected command: ${cmd}`));
+  }
+}
+
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
 
@@ -111,9 +166,31 @@ function refreshButton(host: HTMLElement): HTMLButtonElement {
   return button as HTMLButtonElement;
 }
 
+function button(host: HTMLElement, text: string): HTMLButtonElement {
+  const found = [...host.querySelectorAll("button")].find((b) => b.textContent === text);
+  if (found === undefined) throw new Error(`按钮未渲染：${text}`);
+  return found as HTMLButtonElement;
+}
+
+function optionTexts(select: HTMLSelectElement): string[] {
+  return [...select.options].map((option) => option.textContent ?? "");
+}
+
+async function click(target: HTMLElement) {
+  await act(async () => {
+    target.click();
+  });
+  await flush();
+}
+
+function callsOf(cmd: string) {
+  return callMock.mock.calls.filter((callArgs) => callArgs[0] === cmd);
+}
+
 beforeEach(() => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   callMock.mockReset();
+  callMock.mockImplementation((cmd: string) => defaultMock(cmd));
 });
 
 afterEach(async () => {
@@ -125,14 +202,15 @@ afterEach(async () => {
 
 describe("LivePage", () => {
   it("进入页面即拉取一次，且不带 force", async () => {
-    callMock.mockResolvedValue(snapshotOf());
     await renderPage();
     expect(callMock).toHaveBeenCalledWith("live_refresh");
   });
 
   it("命中缓存时明确写出「缓存于 X 前」，绝不静默展示陈旧数据", async () => {
-    callMock.mockResolvedValue(
-      snapshotOf({ cache_hit: true, fetched_at: Date.now() - 3 * 60_000 }),
+    // 快照在渲染前就构造好：`fetched_at` 必须早于页面时钟的起点，否则「X 分钟前」会少一分钟
+    const cached = snapshotOf({ cache_hit: true, fetched_at: Date.now() - 3 * 60_000 });
+    callMock.mockImplementation((cmd: string) =>
+      cmd === "live_refresh" ? Promise.resolve(cached) : defaultMock(cmd),
     );
     const host = await renderPage();
     expect(host.textContent).toContain("命中缓存");
@@ -141,14 +219,12 @@ describe("LivePage", () => {
   });
 
   it("未命中缓存时写「刚刚拉取」", async () => {
-    callMock.mockResolvedValue(snapshotOf({ cache_hit: false }));
     const host = await renderPage();
     expect(host.textContent).toContain("实时拉取");
     expect(host.textContent).toContain("刚刚拉取");
   });
 
   it("卡片展示 signals、unavailable 与 null 徽章的数据不可得", async () => {
-    callMock.mockResolvedValue(snapshotOf());
     const host = await renderPage();
     expect(host.textContent).toContain("资金费率年化 +42.0%，多头拥挤度偏高");
     expect(host.textContent).toContain("趋势：判定需要至少 200 根 K 线");
@@ -161,8 +237,15 @@ describe("LivePage", () => {
   });
 
   it("instruments 为空但 warnings 非空时，显示警告而不是只显示空态", async () => {
-    callMock.mockResolvedValue(
-      snapshotOf({ instruments: [], warnings: ["BTC-USDT-SWAP 拉取失败：网络请求失败：超时"] }),
+    callMock.mockImplementation((cmd: string) =>
+      cmd === "live_refresh"
+        ? Promise.resolve(
+            snapshotOf({
+              instruments: [],
+              warnings: ["BTC-USDT-SWAP 拉取失败：网络请求失败：超时"],
+            }),
+          )
+        : defaultMock(cmd),
     );
     const host = await renderPage();
     expect(host.textContent).toContain("本次刷新的问题");
@@ -172,7 +255,11 @@ describe("LivePage", () => {
   });
 
   it("IPC 失败且 retryable 时显示错误信息与重试按钮", async () => {
-    callMock.mockRejectedValue({ code: "Http", message: "网络请求失败：超时", retryable: true });
+    callMock.mockImplementation((cmd: string) =>
+      cmd === "live_refresh"
+        ? Promise.reject({ code: "Http", message: "网络请求失败：超时", retryable: true })
+        : defaultMock(cmd),
+    );
     const host = await renderPage();
     expect(host.textContent).toContain("拉取失败");
     expect(host.textContent).toContain("网络请求失败：超时");
@@ -181,7 +268,11 @@ describe("LivePage", () => {
   });
 
   it("retryable 为 false 时不显示重试按钮", async () => {
-    callMock.mockRejectedValue({ code: "Migration", message: "迁移失败", retryable: false });
+    callMock.mockImplementation((cmd: string) =>
+      cmd === "live_refresh"
+        ? Promise.reject({ code: "Migration", message: "迁移失败", retryable: false })
+        : defaultMock(cmd),
+    );
     const host = await renderPage();
     expect(host.textContent).toContain("迁移失败");
     expect(host.textContent).toContain("该错误重试无法自愈");
@@ -189,14 +280,18 @@ describe("LivePage", () => {
   });
 
   it("刷新按钮传 force: true，请求期间禁用并显示加载态", async () => {
-    callMock.mockResolvedValueOnce(snapshotOf());
-    const host = await renderPage();
-
     let release!: (value: LiveSnapshot) => void;
     const pending = new Promise<LiveSnapshot>((resolve) => {
       release = resolve;
     });
-    callMock.mockImplementationOnce(() => pending);
+    let refreshes = 0;
+    callMock.mockImplementation((cmd: string) => {
+      if (cmd !== "live_refresh") return defaultMock(cmd);
+      refreshes += 1;
+      // 首次进入页面照常返回；「刷新」那一次挂起，好观察加载态
+      return refreshes === 1 ? Promise.resolve(snapshotOf()) : pending;
+    });
+    const host = await renderPage();
 
     const button = refreshButton(host);
     await act(async () => {
@@ -214,5 +309,55 @@ describe("LivePage", () => {
     await flush();
     expect(button.disabled).toBe(false);
     expect(button.textContent).toBe("刷新");
+  });
+});
+
+describe("LivePage 生成区", () => {
+  it("页面自带生成区：凭据下拉 + 强制刷新勾选 + 当前 kind 的模板下拉", async () => {
+    const host = await renderPage();
+
+    expect(host.textContent).toContain(S.prompt.context.liveTitle);
+    expect(host.textContent).toContain(S.prompt.generate.title);
+
+    // 两个下拉：实盘上下文的凭据、生成区的模板（行情模板不该出现在这里）
+    const selects = [...host.querySelectorAll("select")];
+    expect(selects).toHaveLength(2);
+    const credentialSelect = selects[0];
+    const templateSelect = selects[1];
+    if (credentialSelect === undefined || templateSelect === undefined) {
+      throw new Error("下拉未渲染");
+    }
+    expect(optionTexts(credentialSelect)).toEqual([
+      S.prompt.context.noCredential,
+      `${credentialOf().label} · ${credentialOf().api_key_masked} · ${S.account.envLive}`,
+    ]);
+    expect(optionTexts(templateSelect)).toEqual([
+      `${LIVE_TEMPLATE.name}（${S.prompt.templates.builtinBadge}）`,
+    ]);
+
+    // 强制刷新是可点的勾选，且勾上后传给生成请求
+    const force = host.querySelector('input[type="checkbox"]');
+    if (!(force instanceof HTMLInputElement)) throw new Error("强制刷新勾选未渲染");
+    expect(force.checked).toBe(false);
+
+    // 挂载只读模板 / 隐私，不生成
+    expect(callsOf("prompt_build_live")).toHaveLength(0);
+
+    await click(force);
+    expect(force.checked).toBe(true);
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+      setter?.call(credentialSelect, credentialOf().id);
+      credentialSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+
+    await click(button(host, S.prompt.generate.run));
+
+    expect(callsOf("prompt_build_live")).toHaveLength(1);
+    expect(callsOf("prompt_build_live")[0]?.[1]).toMatchObject({
+      request: { credential_id: credentialOf().id, force: true },
+    });
   });
 });

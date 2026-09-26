@@ -26,6 +26,7 @@ import {
   retentionText,
 } from "./format";
 import { useCacheCleanup, useCacheStats, useDiagnosticsExport } from "./useSettings";
+import { PrivacyPicker } from "./PrivacyPicker";
 import { useClearProxy, useProxySettings, useSaveProxy } from "./useProxySettings";
 
 async function copyText(text: string): Promise<boolean> {
@@ -498,6 +499,8 @@ export function SettingsPage() {
         <h1 className="text-xl font-semibold tracking-tight sm:text-2xl">{S.settings.title}</h1>
         <p className="mt-0.5 text-sm text-neutral-400">{S.settings.subtitle}</p>
       </header>
+
+      <PrivacyPicker />
 
       <ProxyCard />
       <CacheCard />

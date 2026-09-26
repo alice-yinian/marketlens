@@ -176,13 +176,13 @@ datemode/
 │  ├─ main.tsx
 │  ├─ App.tsx                   # 顶层装配：引导闸门 + 标签页
 │  ├─ features/
-│  │  ├─ live/                  # 实盘：市场状态 + 当前仓位
+│  │  ├─ live/                  # 实盘：市场状态 + 当前仓位 + 生成提示词
 │  │  ├─ kline/                 # 行情：K 线 + 逐根指标 → 提示词
+│  │  ├─ review/                # 复盘：时段 / 采集进度 / 统计 + 生成提示词
 │  │  ├─ account/               # 账户：权益 / 持仓
-│  │  ├─ review/                # 复盘：时段选择 / 采集进度 / 统计
-│  │  ├─ prompt/                # 提示词工作台（模板库 / 编辑器 / 隐私分级 / 导出）
+│  │  ├─ prompt/                # 提示词库：模板管理 + 编辑器 + 语法校验，以及共用的生成面板 / 预览 / 导出
 │  │  ├─ onboarding/            # 首次启动引导（建 vault → 配代理 → 录 Key → 选标的）
-│  │  └─ settings/              # 设置：网络代理 / 缓存 / 诊断
+│  │  └─ settings/              # 设置：隐私等级 / 网络代理 / 缓存 / 诊断
 │  └─ lib/
 │     ├─ ipc.ts                 # 命令的类型化封装（唯一 IPC 出口）
 │     ├─ usePlanFetch.ts        # 采集状态机（进度事件 / 取消），复盘与行情共用
@@ -900,16 +900,36 @@ series     → [{
 
 实现位置在 `prompt/privacy.rs` 的**上下文装配阶段（不是模板里）**——这样用户自写模板也**无法绕过**隐私等级，避免「换了个模板结果泄漏了」的事故。
 
+**等级是全局设置，不是页面的控件**（`settings.privacy_level` + 设置页 + `privacy_get` / `privacy_set`）。三条提示词管线（实盘 / 复盘 / 行情）在后端**未显式指定时都回落到它**，所以「全局生效」是结构性保证而不是各页面自觉传参：某个页面忘了传，也不会掉回一个跟设置页不一致的等级。
+
+> 为什么不做成每页各设一个：那样用户根本无法解释「同一笔仓位为什么在实盘页是百分比、在复盘页是原始金额」。行情上下文里没有任何 `Sensitive` 数值，所以等级对它没有实际影响（有测试断言三个等级输出**逐字节相同**），但它仍走同一个入口——例外越少越不容易忘。
+
 #### 6.6.6 模板编辑器
 
+编辑器在**提示词库**页（模板管理的地方），和它一起的是模板列表、保存/另存为/删除。
+
 - CodeMirror 6 + Jinja 语法高亮（`@codemirror/legacy-modes` 有 jinja2 模式）。
-- 右侧实时预览：编辑 debounce 300ms → `template_preview` 命令 → 用**真实数据**渲染。
-- 预览下方显示 token 估算与字符数。
-- 保存前先 `render` 一次，失败则拒绝保存并高亮错误行（minijinja 的 `Error` 带行号）。
+- **语法校验**：正文 debounce 300ms → `template_check({ body })` → 只做**解析**，报语法错（minijinja 的 `Error` 带行号）并列出模板引用了哪些变量。它**不需要上下文、不联网**，所以模板管理页不必假装拥有任何数据。
+- 保存前先本地校验名称与正文非空（与后端 `trim().is_empty()` 同口径）。
+
+> 这里原本是「右侧用真实数据实时预览」。它随生成能力一起挪到了各页面：预览必须要有上下文（实盘要凭据、复盘要时段），把它留在管理页就等于在管理页里塞一套上下文输入——正是这次重构要拆开的东西。改模板时能立刻知道「语法有没有问题」，要看真实效果就去实盘 / 复盘 / 行情页选它生成一次。
 
 ---
 
 ### 6.7 提示词生成管线
+
+**管理模板与生成提示词分在两个地方**：
+
+| 位置 | 职责 |
+|---|---|
+| **提示词库**（导航「提示词」） | 管理**全部三类**模板：列表 / 编辑 / 另存为 / 删除 + 语法校验。不生成 |
+| **实盘页** | 用实盘上下文生成（凭据 + 是否绕过行情缓存） |
+| **复盘页** | 用复盘上下文生成（沿用本页的凭据与时段） |
+| **行情页** | 自己的计划 → 取数 → 生成流程 |
+
+一条共同的界面规则：生成是**显式点击**触发的，不在挂载时自动跑。进入实盘页会触发一次行情拉取、复盘页会先同步官方历史仓位——「打开页面就偷偷发请求」违背按需原则（ADR 15 的同一条理由）。
+
+各页面共用 `PromptPanel`（选模板下拉 → 生成 → 预览 → 导出），模板下拉按当前上下文类型过滤，**隐私等级不在这里选**（全局，见 §6.6.5）。
 
 #### 6.7.1 实盘
 
@@ -930,7 +950,7 @@ sequenceDiagram
     end
     S-->>F: 市场状态 + 仓位 + cache_hit + fetched_at
     U->>F: 点击「生成提示词」
-    F->>S: prompt_build({template_id, privacy})
+    F->>S: prompt_build_live({template_id, privacy?})
     S->>S: 装配 LiveContext（应用隐私分级）
     S->>T: render(template, ctx)
     T-->>S: text
@@ -962,7 +982,7 @@ sequenceDiagram
     R->>R: 重建指标序列 + 关键时点状态 + 统计
     R-->>F: ReviewContext 预览
     U->>F: 生成提示词
-    F->>R: prompt_build({template_id, privacy})
+    F->>R: prompt_build_review({template_id, privacy?})
     R-->>F: { text, token_estimate, warnings }
 ```
 
@@ -1018,7 +1038,9 @@ sequenceDiagram
 
 **行情不用 `profile`**：实盘 / 复盘的详略由上面的 profile 档位决定；行情的体积由「周期数 × 每周期根数」直接决定，而这两个数就是用户自己选的。取而代之的是**计划阶段就给 token 预警**：`总根数 × APPROX_TOKENS_PER_ROW(40)` 得到 `KlinePlan.est_tokens`，超过 `BUSY_PROMPT_TOKENS(20000)` 时 `kline_plan` 直接在 `warnings` 里说明——用户有权在**等待联网取数之前**知道自己要花多少（等到提示词生成完再发现太长，那批请求已经花掉了）。这个 40 不是拍脑袋：黄金测试实测「300 行 × 2 个指标列」渲染约 **10.2k token**（每行约 34），无头冒烟跑真实数据时「200 行 × 1 个指标列」预估 8000、**实际 6018**（每行约 30）——两次实测都说明 40 是**保守上界**，宁可高估也不给用户一个乐观到误导的数字。注意 `est_tokens` **不含指标列**——指标是 `kline_build` 的参数，计划阶段还不知道（这也是界面标注「量级预估」而不是精确值的原因）。
 
-**渲染路径不另写一份**：`commands/prompt.rs` 的 `resolve_template` 与 `finish` 改为 `pub(crate)` 被行情命令复用——模板 id / body 的解析优先级、`TemplateKind` 校验、渲染与 token 估算只该有一份实现，否则「编辑器实时预览」与「正式生成」迟早出现两套语义。
+**渲染路径不另写一份**：`commands/prompt.rs` 的 `resolve_template` 与 `finish` 改为 `pub(crate)` 被行情命令复用——模板解析（内置优先、用户库兜底、内置 id 视为不存在）、`TemplateKind` 校验、渲染与 token 估算只该有一份实现。三个 `prompt_build_*` / `kline_build` 都走它，所以「某个页面渲染出来的东西和别人不一样」这类问题结构上不会出现。
+
+> 顺带删掉了一条死路径：`resolve_template` 原先还接受一个 `body`（未保存的正文），那是给编辑器实时预览用的。预览随重构去掉后三个命令的调用方全都传 `null`，于是参数、分支与对应的测试一并删除——留着它只会让下一个人不确定该走哪条路。
 
 **页面上怎么走**：`行情` 是顶部导航的第二个标签（紧跟「实盘」）。主线只有一条：选标的 → 勾周期（≤6）→ 填根数（≤500）→ 可选加指标 → 「生成计划」→「开始取数」→ 选模板 →「生成提示词」→ 预览 / 导出。四处刻意的界面决定：
 
@@ -1059,12 +1081,13 @@ sequenceDiagram
 | `kline_plan` | `{request: {inst_id, bars, candle_count}}` | `KlinePlan{est_requests, est_duration_ms, est_tokens, warnings}` | **不联网**：粒度白名单校验 + 根数上限 + token 预估。`bars` 至少 1 个、最多 6 个；`candle_count` ≤ 500 且各周期之和 ≤ 1500 |
 | `kline_fetch` | `{plan_id}` | `ExecutionReport` | 与 `review_fetch` 共用执行器（同一套进度 / 取消 / 续传 / 已收盘永久缓存）；进度走 `fetch://progress` |
 | `kline_cancel` | `{plan_id}` | `bool` | `true` = 确实有一个正在执行的计划被取消了；`false` = 它已经结束了 |
-| `kline_build` | `{request: {plan_id, template_id?, body?, indicators}}` | `{text, token_estimate, warnings}` | **只读本地库**（不联网）：读 K 线 → 逐根算指标 → 渲染。指标是这里的参数，所以「换个指标看看」零请求；`body` 供编辑器实时预览 |
+| `kline_build` | `{request: {plan_id, template_id?, indicators?}}` | `{text, token_estimate, warnings}` | **只读本地库**（不联网）：读 K 线 → 逐根算指标 → 渲染。指标是这里的参数，所以「换个指标看看」零请求 |
 | **通用** | | | |
-| `templates_list` / `templates_get` / `templates_save` / `templates_delete` | | | 分 `live` / `review` / `market` 三集；内置模板不可删，只能另存为 |
-| `prompt_build` | `{template_id, profile, privacy, source}` | `{text, token_estimate, warnings}` | `source` 指向实盘快照或复盘 plan（行情走 `kline_build`，它自带 `plan_id` 与指标参数） |
-| `prompt_preview` | `{template_body, source}` | `{text, error?}` | 编辑器实时预览 |
-| `prompt_export` | `{text, format, path?}` | `{path}` | |
+| `templates_list` / `templates_get` / `templates_save` / `templates_delete` | | | 分 `live` / `review` / `market` 三集；内置模板不可删，只能另存为。提示词库列**全部三集** |
+| `template_check` | `{body}` | `[变量名]` | **只解析语法**（不渲染、不联网、不需要上下文）：模板管理页的即时反馈。报错走 `Template` 错误码，消息里带行号 |
+| `prompt_build_live` | `{template_id, privacy?, credential_id?, force?}` | `{text, token_estimate, warnings}` | `privacy` 缺省 = **读全局设置**（§6.6.5）；由实盘页调用 |
+| `prompt_build_review` | `{template_id, privacy?, credential_id?, from, to, bar?}` | 同上 | 会先同步官方历史仓位；同上，`privacy` 缺省读全局；由复盘页调用 |
+| `privacy_get` / `privacy_set` | `{level}` | `PrivacyLevel` | 全局隐私等级，落 `settings.privacy_level`；诊断包白名单里含它（它不是敏感信息，反而是排查「AI 看到了什么」的线索） |
 | `settings_get` / `settings_set` | | | |
 | `proxy_get` | – | `{url}` | `url === null` = 未显式配置（此时沿用系统 / 环境变量代理） |
 | `proxy_set` | `{input:{url}}` | `{url}` | 校验 → 落库 → **热重建 HTTP 客户端**（不需要重启）；`url` 为空串 / `null` = 清除 |
@@ -1442,7 +1465,7 @@ CREATE TABLE journal (
 | 密钥泄漏 | 明文只存 Stronghold vault（argon2 派生加密）；SQLite 只存掩码；日志脱敏中间件过滤 `OK-ACCESS-*` 头与 secret 字段 |
 | 越权交易 | 代码层面不实现任何私有 `POST` 端点；`credentials_test` 主动读取权限，非只读时**红色警示** |
 | 前端注入 → 数据泄漏 | 不向前端暴露 SQL 与 vault 命令；`capabilities/default.json` **仅放行 `core:default`**；CSP 收紧为 `default-src 'self'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost`。注意 **`connect-src` 里刻意不含 `okx.com`**——所有交易所请求都由 Rust 侧发起，WebView 永远不需要直连外网，这比原设计更紧 |
-| 提示词泄漏隐私 | 隐私分级在上下文装配阶段强制生效；导出时按等级二次确认 |
+| 提示词泄漏隐私 | 隐私分级在上下文装配阶段强制生效；等级是**全局设置**（`settings.privacy_level`），三条管线未显式指定时都回落到它，所以不存在「某个页面漏传就泄漏」的缝隙；导出时按等级二次确认 |
 | **代理凭据泄漏** | 代理 URL 存 `settings.proxy`（**明文**）——它必须在密钥库解锁**之前**就生效，放进 vault 会让冷启动的公共请求拿不到它。补偿措施是三道：诊断导出的设置白名单**刻意不含** `proxy`（有测试守着）、日志里一律走 `redact_proxy`（只保留用户名，密码换 `***`）、界面明示「地址里带 `user:pass` 会明文落盘，本地代理通常无需凭据」 |
 | 剪贴板残留 | 复制提示词后 60s 自动清空剪贴板（可选，默认开） |
 | 无人值守 | 15 分钟无操作自动锁 vault |
@@ -1535,6 +1558,20 @@ CREATE TABLE journal (
 | `token_estimate_is_reasonable_for_builtins` | 内置模板都能量出 token 且量级合理（> 50、< 8000）；行情模板**用小样本**量正文长度——「数据多」不该被误判成「模板长」 |
 
 **总量**：`cargo test --lib` 的通过数从功能前的 **188** 项到功能后的 **219** 项（另有 7 项联网测试默认 `#[ignore]`）。
+
+**提示词管理与生成归位（增量）**：
+
+| 测试 | 守住什么 |
+|---|---|
+| `render::check_reports_syntax_errors_without_a_context` / `check_lists_referenced_variables` / `check_accepts_an_empty_body` | 语法校验**不需要上下文**：报错带行号、通过时列出引用的变量（排序稳定）、空正文不算错（刚清空编辑器时不该报红） |
+| `settings::privacy_defaults_to_l1_when_unset` / `privacy_round_trips` / `corrupt_privacy_falls_back_to_the_default` | 全局隐私等级的默认值、往返与**损坏回落**（配置坏了不阻塞启动，回落到安全的那一档并留日志） |
+| `prompt::templates::golden::*`（既有） | 内置模板在三个等级下都能渲染——现在等级来自全局设置，这条仍然是模板契约的底线 |
+| `PromptPanel.test.tsx`：挂载不发请求 / 请求形状 / 下拉只列本 kind / 隐私只读 / 上游禁用 | 「管理」与「生成」分家后，生成是**显式点击**触发的（打开页面不该偷偷发请求），且每条管线只认自己那一类模板 |
+| `PromptPage.test.tsx`：三类分组 / 存删语义 / 语法校验三态 | 提示词库**只管模板**：不出现生成、预览、导出、隐私选择器与时段控件 |
+| `ReviewPage.test.tsx`（生成区）+ `LivePage.test.tsx`（生成区） | 各页面的生成用的是**本页**的上下文：复盘页断言 `from`/`to`/`bar`/`credential_id` 与页面上选的一致，实盘页断言凭据下拉与 `force` 进了请求 |
+| `SettingsPage.test.tsx`（隐私卡片） | 三档都能选、点击写回 `privacy_set`、并按 `privacy_get` 的值标出当前档（不写死默认） |
+
+合计：`cargo test --lib` **225 项**（另 7 项 `#[ignore]` 联网测试）+ 前端 **242 项**（18 个文件）。
 
 ### 13.2 指标公式的独立交叉验证 ⭐
 
@@ -1775,8 +1812,8 @@ keytool -genkey -v -keystore ~/upload-keystore.jks \
 | 3 | 实盘页拿到真实行情（3 个标的、无警告） | 验证出网、限流器、指标计算三段都通 |
 | 4 | 账户页显示真实权益与持仓 | 验证签名算法与私有端点 |
 | 5 | 复盘页采集 → 装配 → 统计 → 逐笔归因 | M3 + M4 全链 |
-| 6 | 提示词页：4 个内置模板都能渲染；切 L0/L1/L2 **内容随之变化** | M5 全链；切等级不生效是最隐蔽的失败 |
-| 7 | 提示词页：改模板正文，预览在 300ms 内更新 | 防抖坏了用户会以为编辑器没保存 |
+| 6 | **设置页**切 L0/L1/L2 后，到实盘页点一次生成，**内容随之变化**；提示词库能列出全部三类模板 | 等级是全局的；切等级不生效是最隐蔽的失败 |
+| 7 | 提示词库：改模板正文，**语法校验**在 300ms 内给出结果（正确时报出引用的变量，写错时报行号） | 防抖或校验坏了，用户会以为编辑器没保存 |
 | 8 | 导出：复制到剪贴板有反馈；另存为产生「自定义」模板 | 导出是唯一的产出出口 |
 | 9 | 设置页：缓存统计有数据；清理有二次确认 | 清理不可撤销 |
 | 10 | 设置页：诊断导出成功，`redactions` 与实际相符 | 见下条 |
@@ -2406,4 +2443,5 @@ npx tauri build --no-bundle
 | **21** | **一套模板遍历 `series`，覆盖 1..N 个周期** | 「单周期」只是 `series` 长度为 1 的特例，正文里一个分支就够了（还能顺带要求 AI 说明结论的适用范围）；两套模板在加字段 / 改口径时总会只改一边 | 单周期与多周期各写一套模板（两边迟早不一致） |
 | **22** | **不支持月线 `1M` / `3M`** | `bar_millis` 手里的单位只有 m/H/D/W，而月份长度不固定（28~31 天）——换算成固定毫秒就是撒谎。与其给一个近似值，不如明确不支持（界面里也不出现） | 给一个近似值（「看起来对」的错数据比没有更糟） |
 | **23** | **行情不受隐私分级影响** | 沿既有规则「市场数据不是隐私」：价格、成交量、指标都是公开数据，三个等级产出**逐字节相同**的内容（有测试断言）；行情页也不显示隐私选择器——显示它会让人以为「切到 L2 能脱敏价格」 | 让行情也走三级脱敏（没有可脱敏的东西，却让人以为有）。装配流程里仍调用一次 `privacy::apply`，守的是「装配之后必须过一遍隐私」这条不变量 |
+| **25** | **模板管理与生成分家：库只管模板，生成按上下文归位到实盘 / 复盘 / 行情页；隐私等级全局化** | 同一页面上既有「改模板」又有「用模板」时，「我改了模板但预览没变（其实在看另一个模板）」几乎无法避免；而生成必须要有上下文（实盘要凭据、复盘要时段），把上下文输入塞进管理页正是要拆开的东西。等级全局化则消除了「同一笔仓位在两个页面呈现不同」这种无法解释的状态 | 保持现状（管理页兼生成页）、每页各设一个隐私等级（用户无法解释差异）、把生成做成独立页面（又要重复一遍上下文输入） |
 | **24** | **行情「读的比显示的多」：按 `请求根数 + 最长指标周期` 从库里读，算完指标只显示最后 N 根** | 否则 `EMA200` 配上「只要 200 根」会得到 199 个 `—`，用户看到的是一列破折号，功能等于没有；这与图表工具的行为一致（图上画 200 根，EMA200 仍是完整的一条线）。库里历史不足时仍然诚实：头部该是 `—` 就是 `—`，由模板声明原因 | 只读显示根数（指标列大面积破折号）；读满上限再截断（每次都要读无关的历史） |

@@ -149,6 +149,29 @@ describe("App 闸门", () => {
     expect(host.textContent).not.toContain(S.onboarding.title);
   });
 
+  it("标签顺序是 实盘 · 行情 · 复盘 · 账户 · 提示词 · 设置（先看当下，配置类靠后）", async () => {
+    mockIpc({
+      vault_exists: true,
+      vault_unlocked: true,
+      onboarding_done: true,
+      watchlist: [],
+    });
+    const host = await renderApp();
+
+    const nav = host.querySelector("nav");
+    if (!(nav instanceof HTMLElement)) throw new Error("顶部标签未渲染");
+    const labels = [...nav.querySelectorAll("button")].map((b) => b.textContent);
+    // 末尾那个是「重新配置」入口，不属于标签
+    expect(labels.filter((label) => label !== S.nav.configure)).toEqual([
+      S.nav.live,
+      S.nav.kline,
+      S.nav.review,
+      S.nav.account,
+      S.nav.prompt,
+      S.nav.settings,
+    ]);
+  });
+
   it("切换到「账户」标签渲染账户页", async () => {
     mockIpc({
       vault_exists: true,

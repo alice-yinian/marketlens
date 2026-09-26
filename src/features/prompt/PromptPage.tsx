@@ -1,38 +1,27 @@
 /**
- * 提示词页（M5）。
+ * 提示词库（纯管理）。
  *
- * 页面本身不含业务逻辑：模板与渲染全部来自 Rust
- * （`template_list` / `prompt_build_live` / `prompt_build_review`），
- * 文案来自 `lib/strings.ts`，组件不直接碰 Tauri API。
+ * 这里只有「管理」：列模板（实盘 / 复盘 / 行情三类全在此）、编辑正文、另存为、删除，
+ * 以及**不需要上下文**的语法校验。
  *
- * 数据流：
- *   模板库 → 选中 → 草稿（名称/说明/正文）→ 300ms 防抖 → 预览
- *   隐私等级 → 立即进入预览 queryKey（切等级即重新生成）
- *   上下文（实盘凭据/强制刷新；复盘凭据/时段/粒度）→ 同上
+ * 生成提示词**不在这里**——它需要上下文，所以按上下文归位：实盘页、复盘页、行情页。
+ * 这一刀切开的理由：原来同一个页面上既有「改模板」又有「用模板」，
+ * 于是「我改了模板但预览没变（在看另一个模板）」这类误会几乎无法避免。
  */
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
+import { call } from "../../lib/ipc";
 import { S } from "../../lib/strings";
-import type { PrivacyLevel } from "../../lib/types";
-import { useCredentials } from "../account/useAccountSnapshot";
-import { ContextPanel } from "./ContextPanel";
-import { ExportBar } from "./ExportBar";
-import { PreviewPanel } from "./PreviewPanel";
-import { PrivacyPicker } from "./PrivacyPicker";
+import { ErrorPanel } from "../account/ErrorPanel";
 import { TemplateEditor } from "./TemplateEditor";
 import { TemplateLibrary } from "./TemplateLibrary";
-import {
-  DEFAULT_PRIVACY,
-  rangeError,
-  saveAsName,
-  templateProblem,
-  templateProblemText,
-} from "./format";
+import { saveAsName, templateProblem, templateProblemText } from "./format";
 import { useDebouncedValue } from "./useDebouncedValue";
-import { usePromptPreview } from "./usePromptPreview";
 import { useDeleteTemplate, useSaveTemplate, useTemplates } from "./useTemplates";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+/** 三类模板全在这里管理：库的职责就是把它们放在一起。 */
+const ALL_KINDS = ["live", "review", "market"] as const;
 
 const fieldClass =
   "rounded-md border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-sm text-neutral-100";
@@ -41,6 +30,53 @@ interface Draft {
   name: string;
   description: string;
   body: string;
+}
+
+/**
+ * 语法校验：只需正文，不需要上下文，也不联网。
+ *
+ * 与生成时的渲染分开：渲染会报「缺哪个变量」（那需要上下文），
+ * 这里只回答「这段正文本身写对没有」——正是改模板时最需要的那条反馈。
+ * 正文防抖 300ms 后才校验，避免每敲一个字发一次 IPC。
+ */
+function CheckPanel({ body }: { body: string }) {
+  const debounced = useDebouncedValue(body, 300);
+  const trimmed = debounced.trim();
+
+  const query = useQuery({
+    queryKey: ["template_check", trimmed],
+    queryFn: () => call("template_check", { body: trimmed }),
+    enabled: trimmed.length > 0,
+    staleTime: Infinity,
+  });
+
+  return (
+    <section className="flex flex-col gap-2 rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
+      <h2 className="text-sm font-medium text-neutral-200">{S.prompt.editor.checkTitle}</h2>
+
+      {trimmed.length === 0 ? (
+        <p className="text-xs text-neutral-500">{S.prompt.editor.checkEmpty}</p>
+      ) : query.isError ? (
+        <ErrorPanel
+          title={S.prompt.check.errorTitle}
+          error={query.error}
+          onRetry={() => void query.refetch()}
+          busy={query.isFetching}
+        />
+      ) : query.data === undefined ? (
+        <p className="text-xs text-neutral-500">{S.prompt.editor.checking}</p>
+      ) : (
+        <>
+          <p className="text-xs text-emerald-300">{S.prompt.check.ok(query.data.length)}</p>
+          {query.data.length === 0 ? null : (
+            <p className="font-mono text-xs break-all text-neutral-400">
+              {S.prompt.check.variables(query.data.join(" · "))}
+            </p>
+          )}
+        </>
+      )}
+    </section>
+  );
 }
 
 export function PromptPage() {
@@ -56,9 +92,6 @@ export function PromptPage() {
   const selected = list.find((template) => template.id === effectiveId) ?? null;
 
   const [draft, setDraft] = useState<Draft>({ name: "", description: "", body: "" });
-  // 正文是否被用户实际编辑过。选择模板时先复位为 false，
-  // 这样「选中模板 → 防抖尚未追上新正文」的空窗期不会带着空/旧正文去请求。
-  const [bodyEdited, setBodyEdited] = useState(false);
   const syncedRef = useRef<string | null>(null);
   useEffect(() => {
     if (selected === null) return;
@@ -69,50 +102,9 @@ export function PromptPage() {
       description: selected.description,
       body: selected.body,
     });
-    setBodyEdited(false);
   }, [selected]);
 
-  const [privacy, setPrivacy] = useState<PrivacyLevel>(DEFAULT_PRIVACY);
-  const [credentialId, setCredentialId] = useState<string | null>(null);
-  const [force, setForce] = useState(false);
-  const [range, setRange] = useState(() => {
-    const now = Date.now();
-    return { from: now - 7 * DAY_MS, to: now, bar: "1H" };
-  });
   const [confirmDelete, setConfirmDelete] = useState(false);
-
-  const credentialsQuery = useCredentials();
-  const credentials = {
-    list: credentialsQuery.data ?? [],
-    isPending: credentialsQuery.isPending,
-    isError: credentialsQuery.isError,
-  };
-
-  const kind = selected?.kind ?? "live";
-  const rangeProblem = kind === "review" ? rangeError(range.from, range.to) : null;
-
-  // 正文防抖 300ms；隐私等级不进防抖——切等级必须立即重新生成。
-  const debouncedBody = useDebouncedValue(draft.body, 300);
-  const savedBody = selected?.body ?? "";
-  // 只有用户真正编辑过、且防抖后的正文确实不同于已保存正文时，才把 body 交给后端
-  // （否则走 template_id 路径，避免选择模板瞬间用旧/空正文发一次请求）。
-  const previewBody = bodyEdited && debouncedBody !== savedBody ? debouncedBody : null;
-
-  const previewEnabled =
-    selected !== null && (kind === "live" || (credentialId !== null && rangeProblem === null));
-
-  const preview = usePromptPreview({
-    kind,
-    templateId: selected?.id ?? null,
-    body: previewBody,
-    privacy,
-    credentialId,
-    force,
-    from: range.from,
-    to: range.to,
-    bar: range.bar,
-    enabled: previewEnabled,
-  });
 
   const saveMutation = useSaveTemplate();
   const deleteMutation = useDeleteTemplate();
@@ -165,9 +157,6 @@ export function PromptPage() {
     });
   };
 
-  const templateName =
-    selected === null ? S.prompt.preview.unsavedName : draft.name || S.prompt.preview.unsavedName;
-
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-col gap-5 p-4 sm:p-6">
       <header>
@@ -179,40 +168,20 @@ export function PromptPage() {
         <div className="flex min-w-0 flex-col gap-5">
           <TemplateLibrary
             templates={list}
-            // 提示词页只生成实盘 / 复盘提示词：行情模板引用的是 `series`，
-            // 在这页选它会立刻因类型校验被拒。
-            kinds={["live", "review"]}
+            kinds={ALL_KINDS}
             loading={templatesQuery.isPending}
             error={templatesQuery.error}
             onRetry={() => void templatesQuery.refetch()}
             selectedId={effectiveId}
             onSelect={selectTemplate}
           />
+        </div>
 
-          <PrivacyPicker value={privacy} onChange={setPrivacy} />
-
-          {selected === null ? null : (
-            <ContextPanel
-              kind={kind}
-              credentials={credentials}
-              credentialId={credentialId}
-              onCredential={setCredentialId}
-              force={force}
-              onForce={setForce}
-              from={range.from}
-              to={range.to}
-              bar={range.bar}
-              problem={rangeProblem}
-              onRange={(next) => setRange((prev) => ({ ...prev, ...next }))}
-            />
-          )}
-
+        <div className="flex min-w-0 flex-col gap-5">
           {selected === null ? null : (
             <section className="flex flex-col gap-3 rounded-xl border border-neutral-800 bg-neutral-900/40 p-4">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <h2 className="text-sm font-medium text-neutral-200">
-                  {S.prompt.editor.title}
-                </h2>
+                <h2 className="text-sm font-medium text-neutral-200">{S.prompt.editor.title}</h2>
                 {dirty ? (
                   <span className="text-xs text-amber-300">{S.prompt.editor.dirty}</span>
                 ) : null}
@@ -244,10 +213,7 @@ export function PromptPage() {
                 {S.prompt.editor.body}
                 <TemplateEditor
                   value={draft.body}
-                  onChange={(body) => {
-                    setBodyEdited(true);
-                    setDraft((prev) => ({ ...prev, body }));
-                  }}
+                  onChange={(body) => setDraft((prev) => ({ ...prev, body }))}
                 />
               </div>
 
@@ -340,22 +306,8 @@ export function PromptPage() {
               )}
             </section>
           )}
-        </div>
 
-        <div className="flex min-w-0 flex-col gap-5">
-          <PreviewPanel
-            output={preview.data ?? null}
-            error={preview.error}
-            isFetching={preview.isFetching}
-            isPending={preview.isPending}
-            enabled={previewEnabled}
-            templateName={templateName}
-          />
-          <ExportBar
-            output={preview.data ?? null}
-            privacy={privacy}
-            templateName={templateName}
-          />
+          <CheckPanel body={draft.body} />
         </div>
       </div>
     </main>

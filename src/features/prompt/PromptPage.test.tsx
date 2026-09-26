@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 /**
- * 提示词页的行为测试：隐私等级切换触发重新生成、渲染错误原样展示、
- * warnings 展示、内置模板只能另存为、token/字符数展示、复盘 90 天上限友好提示。
+ * 提示词页（纯管理）的行为测试：
+ * - 模板库列**全部三类**（实盘 / 复盘 / 行情）并按类型分组；
+ * - 选中即同步草稿，重复点选不会冲掉未保存的改动；
+ * - 保存 / 另存为 / 删除语义：内置只能另存为、用户模板可覆盖、删除必须二次确认；
+ * - 语法校验的三种态：空正文不校验、成功并列出变量、后端报错原样展示；
+ * - 页面上**不再**有生成 / 预览 / 导出 / 隐私选择器（它们按上下文挪到了实盘页、复盘页）。
  *
  * 只 mock IPC 出口（lib/ipc），页面与 hook 逻辑全部真实执行。
  */
@@ -10,7 +14,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { CredentialMeta, PromptOutput, PromptTemplate } from "../../lib/types";
+import type { PromptTemplate } from "../../lib/types";
 
 const callMock = vi.fn();
 vi.mock("../../lib/ipc", () => ({
@@ -18,14 +22,11 @@ vi.mock("../../lib/ipc", () => ({
 }));
 
 import { S } from "../../lib/strings";
-import { MAX_RANGE_MS, msToLocalInput } from "./format";
 import { PromptPage } from "./PromptPage";
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean;
 }
-
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 function templateOf(overrides: Partial<PromptTemplate>): PromptTemplate {
   return {
@@ -40,62 +41,47 @@ function templateOf(overrides: Partial<PromptTemplate>): PromptTemplate {
   };
 }
 
-const TEMPLATES: PromptTemplate[] = [
-  templateOf({}),
-  templateOf({
-    id: "user_1",
-    name: "我的实盘模板",
-    description: "",
-    builtin: false,
-    updated_at: 1,
-  }),
-  templateOf({
-    id: "review_performance",
-    name: "复盘：绩效与归因",
-    description: "统计 + 归因",
-    kind: "review",
-    body: "REVIEW BODY",
-  }),
-];
+const LIVE_BUILTIN = templateOf({});
+const LIVE_USER = templateOf({
+  id: "user_1",
+  name: "我的实盘模板",
+  description: "",
+  body: "USER BODY {{ position.size }}",
+  builtin: false,
+  updated_at: 1,
+});
+const REVIEW = templateOf({
+  id: "review_performance",
+  name: "复盘：绩效与归因",
+  description: "统计 + 归因",
+  kind: "review",
+  body: "REVIEW BODY",
+});
+const MARKET = templateOf({
+  id: "market_trend",
+  name: "行情：趋势速览",
+  description: "K 线与指标",
+  kind: "market",
+  body: "MARKET BODY",
+});
 
-function credentialOf(overrides: Partial<CredentialMeta> = {}): CredentialMeta {
-  return {
-    id: "cred-1",
-    label: "主账户只读",
-    env: "live",
-    api_key_masked: "abcd****ef12",
-    permissions: "read_only",
-    uid_masked: "1234****",
-    last_ok_at: null,
-    last_error: null,
-    created_at: 1_700_000_000_000,
-    ...overrides,
-  };
-}
+const TEMPLATES: PromptTemplate[] = [LIVE_BUILTIN, LIVE_USER, REVIEW, MARKET];
 
-function outputOf(overrides: Partial<PromptOutput> = {}): PromptOutput {
-  return {
-    text: "PROMPT TEXT",
-    token_estimate: 123,
-    char_count: 456,
-    privacy: "L1",
-    template_id: "live_quick",
-    template_name: "实盘速览",
-    warnings: [],
-    generated_at: 1_700_000_000_000,
-    ...overrides,
-  };
-}
+/** 语法校验后端返回的变量名（模板正文里引用了什么） */
+const CHECKED_VARIABLES = ["meta.generated_at", "position.size"];
 
 function defaultMock(cmd: string): Promise<unknown> {
   switch (cmd) {
     case "template_list":
       return Promise.resolve(TEMPLATES);
-    case "credentials_list":
-      return Promise.resolve([credentialOf()]);
-    case "prompt_build_live":
-    case "prompt_build_review":
-      return Promise.resolve(outputOf());
+    case "template_check":
+      return Promise.resolve(CHECKED_VARIABLES);
+    case "template_save":
+      return Promise.resolve(
+        templateOf({ id: "user_2", name: "实盘速览（副本）", builtin: false }),
+      );
+    case "template_delete":
+      return Promise.resolve(undefined);
     default:
       return Promise.reject(new Error(`unexpected command: ${cmd}`));
   }
@@ -113,6 +99,16 @@ async function flush() {
       setTimeout(resolve, 0);
     });
   });
+}
+
+/** 推进真实计时器：语法校验有 300ms 防抖，必须等它落地 */
+async function advance(ms: number) {
+  await act(async () => {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, ms);
+    });
+  });
+  await flush();
 }
 
 async function renderPage() {
@@ -158,6 +154,19 @@ async function click(target: HTMLElement) {
   await flush();
 }
 
+function nameInput(host: HTMLElement): HTMLInputElement {
+  const found = host.querySelector(`input[placeholder="${S.prompt.editor.namePlaceholder}"]`);
+  if (!(found instanceof HTMLInputElement)) throw new Error("模板名称输入框未渲染");
+  return found;
+}
+
+function bodyTextarea(host: HTMLElement): HTMLTextAreaElement {
+  const found = host.querySelector("textarea");
+  if (!(found instanceof HTMLTextAreaElement)) throw new Error("正文编辑器未渲染");
+  return found;
+}
+
+/** React 19 受控 input：必须走原生 setter + 事件派发 */
 function setInputValue(input: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
   setter?.call(input, value);
@@ -171,7 +180,7 @@ function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function buildCalls(cmd: string) {
+function callsOf(cmd: string) {
   return callMock.mock.calls.filter((callArgs) => callArgs[0] === cmd);
 }
 
@@ -188,148 +197,212 @@ afterEach(async () => {
   container = undefined;
 });
 
-describe("PromptPage", () => {
-  it("默认选中第一个模板并按 L1 生成预览", async () => {
-    const host = await renderPage();
-    expect(host.textContent).toContain("实盘速览");
-    const calls = buildCalls("prompt_build_live");
-    expect(calls.length).toBeGreaterThan(0);
-    expect(calls[0]?.[1]).toMatchObject({ request: { privacy: "L1" } });
-  });
-
-  it("切换隐私等级会立即触发重新生成（不是只改状态）", async () => {
-    const host = await renderPage();
-    const before = buildCalls("prompt_build_live").length;
-
-    await click(buttonContaining(host, S.prompt.privacy.L2.label));
-
-    const calls = buildCalls("prompt_build_live");
-    expect(calls.length).toBeGreaterThan(before);
-    expect(calls.at(-1)?.[1]).toMatchObject({ request: { privacy: "L2" } });
-    expect(host.textContent).toContain(S.prompt.privacy.L2.desc);
-  });
-
-  it("后端返回的 Template 渲染错误被原样展示，不吞掉", async () => {
-    const message = "模板引用了上下文中不存在的变量：alpha、beta";
-    callMock.mockImplementation((cmd: string) =>
-      cmd === "prompt_build_live"
-        ? Promise.reject({ code: "Template", message, retryable: false })
-        : defaultMock(cmd),
-    );
+describe("PromptPage 模板库", () => {
+  it("列全部三类模板并按类型分组（管理页不再只列实盘 / 复盘）", async () => {
     const host = await renderPage();
 
-    expect(host.textContent).toContain(S.prompt.preview.errorTitle);
-    expect(host.textContent).toContain(message);
-    expect(host.textContent).toContain("alpha");
+    // 四份模板（实盘内置 + 实盘自定义 + 复盘 + 行情）都在
+    for (const template of [LIVE_BUILTIN, LIVE_USER, REVIEW, MARKET]) {
+      expect(host.textContent).toContain(template.name);
+    }
+    // 分组标题顺序 = 实盘 / 复盘 / 行情，且行情模板没有被静默漏掉
+    const groups = [...host.querySelectorAll("h3")].map((node) => node.textContent);
+    expect(groups).toEqual([
+      S.prompt.templates.kindLive,
+      S.prompt.templates.kindReview,
+      S.prompt.templates.kindMarket,
+    ]);
   });
 
-  it("warnings 会被逐条展示", async () => {
-    const warning = "账户数据不可得：尚未配置凭据";
-    callMock.mockImplementation((cmd: string) =>
-      cmd === "prompt_build_live"
-        ? Promise.resolve(outputOf({ warnings: [warning] }))
-        : defaultMock(cmd),
-    );
+  it("纯管理页：不出现生成 / 预览 / 导出 / 隐私选择器", async () => {
     const host = await renderPage();
 
-    expect(host.textContent).toContain(S.prompt.preview.warningsTitle);
-    expect(host.textContent).toContain(warning);
+    expect(hasButton(host, S.prompt.generate.run)).toBe(false);
+    expect(host.textContent).not.toContain(S.prompt.preview.title);
+    expect(hasButton(host, S.prompt.export.copy)).toBe(false);
+    expect(host.textContent).not.toContain(S.settings.privacy.L0.label);
+    // 时段控件属于复盘页，这里也没有
+    expect(host.querySelectorAll('input[type="datetime-local"]')).toHaveLength(0);
   });
+});
 
-  it("展示 token 估算与字符数", async () => {
+describe("PromptPage 选中与草稿", () => {
+  it("选中即同步草稿：默认第一条，换一条就换一套名称 / 说明 / 正文", async () => {
     const host = await renderPage();
-    expect(host.textContent).toContain(S.prompt.preview.tokens(123));
-    expect(host.textContent).toContain(S.prompt.preview.chars(456));
+
+    // 默认选中第一条（内置实盘速览）
+    expect(nameInput(host).value).toBe(LIVE_BUILTIN.name);
+    expect(bodyTextarea(host).value).toBe(LIVE_BUILTIN.body);
+
+    await click(buttonContaining(host, MARKET.name));
+
+    expect(nameInput(host).value).toBe(MARKET.name);
+    expect(bodyTextarea(host).value).toBe(MARKET.body);
   });
 
-  it("内置模板不能直接保存，只能另存为（另存为传 null id）", async () => {
-    callMock.mockImplementation((cmd: string) =>
-      cmd === "template_save"
-        ? Promise.resolve(
-            templateOf({ id: "user_2", name: "实盘速览（副本）", builtin: false }),
-          )
-        : defaultMock(cmd),
-    );
+  it("重复点选同一条不会冲掉未保存的草稿", async () => {
+    const host = await renderPage();
+
+    await act(async () => {
+      setTextareaValue(bodyTextarea(host), "EDITED BODY");
+    });
+    await flush();
+
+    await click(buttonContaining(host, LIVE_BUILTIN.name));
+
+    expect(bodyTextarea(host).value).toBe("EDITED BODY");
+    expect(host.textContent).toContain(S.prompt.editor.dirty);
+  });
+});
+
+describe("PromptPage 保存 / 另存为 / 删除", () => {
+  it("内置模板只能另存为：没有「保存」，另存为传 null id 且同名时追加副本后缀", async () => {
     const host = await renderPage();
 
     expect(hasButton(host, S.prompt.actions.save)).toBe(false);
     expect(hasButton(host, S.prompt.actions.saveAs)).toBe(true);
+    expect(host.textContent).toContain(S.prompt.actions.saveAsNote);
+    // 内置模板不可删除
+    expect(hasButton(host, S.prompt.actions.delete)).toBe(false);
 
     await click(button(host, S.prompt.actions.saveAs));
 
-    const saveCalls = buildCalls("template_save");
+    const saveCalls = callsOf("template_save");
     expect(saveCalls).toHaveLength(1);
     expect(saveCalls[0]?.[1]).toMatchObject({
-      request: { id: null, kind: "live", name: "实盘速览（副本）" },
+      request: {
+        // id 为 null = 新建：后端生成新 id，内置模板永不被覆盖
+        id: null,
+        kind: "live",
+        name: `${LIVE_BUILTIN.name}${S.prompt.actions.saveAsCopySuffix}`,
+        body: LIVE_BUILTIN.body,
+      },
     });
   });
 
-  it("用户模板可以保存（带 id 覆盖）并可删除", async () => {
-    callMock.mockImplementation((cmd: string) => {
-      if (cmd === "template_save") {
-        return Promise.resolve(templateOf({ id: "user_1", name: "我的实盘模板", builtin: false }));
-      }
-      if (cmd === "template_delete") return Promise.resolve(undefined);
-      return defaultMock(cmd);
-    });
+  it("内置模板改名后另存为：用改后的名字，不再追加副本后缀", async () => {
     const host = await renderPage();
 
-    await click(buttonContaining(host, "我的实盘模板"));
+    await act(async () => {
+      setInputValue(nameInput(host), "我的实盘速览");
+    });
+    await flush();
+
+    await click(button(host, S.prompt.actions.saveAs));
+
+    expect(callsOf("template_save")[0]?.[1]).toMatchObject({
+      request: { id: null, name: "我的实盘速览" },
+    });
+  });
+
+  it("用户模板可以保存（带 id 覆盖，不新建）", async () => {
+    const host = await renderPage();
+    await click(buttonContaining(host, LIVE_USER.name));
+
     expect(hasButton(host, S.prompt.actions.save)).toBe(true);
 
     await click(button(host, S.prompt.actions.save));
-    expect(buildCalls("template_save")[0]?.[1]).toMatchObject({
-      request: { id: "user_1" },
+    expect(callsOf("template_save")).toHaveLength(1);
+    expect(callsOf("template_save")[0]?.[1]).toMatchObject({
+      request: {
+        id: LIVE_USER.id,
+        name: LIVE_USER.name,
+        kind: "live",
+        body: LIVE_USER.body,
+      },
     });
+  });
+
+  it("正文为空时本地就拦住提交：按钮禁用 + 人话说明，不白跑一次 IPC", async () => {
+    const host = await renderPage();
+    await click(buttonContaining(host, LIVE_USER.name));
+
+    await act(async () => {
+      setTextareaValue(bodyTextarea(host), "   ");
+    });
+    await flush();
+
+    expect(button(host, S.prompt.actions.save).disabled).toBe(true);
+    expect(host.textContent).toContain(S.prompt.actions.bodyRequired);
+    expect(callsOf("template_save")).toHaveLength(0);
+  });
+
+  it("删除必须二次确认：先展开确认区，确认后才调用 template_delete", async () => {
+    const host = await renderPage();
+    await click(buttonContaining(host, LIVE_USER.name));
 
     await click(button(host, S.prompt.actions.delete));
+    expect(host.textContent).toContain(S.prompt.actions.deleteConfirmNote);
+    expect(callsOf("template_delete")).toHaveLength(0);
+
+    // 取消不触发删除
+    await click(button(host, S.prompt.actions.deleteCancel));
+    expect(callsOf("template_delete")).toHaveLength(0);
+    expect(host.textContent).not.toContain(S.prompt.actions.deleteConfirmNote);
+
+    // 再次展开并确认才真的删
+    await click(button(host, S.prompt.actions.delete));
     await click(button(host, S.prompt.actions.deleteConfirm));
-    expect(buildCalls("template_delete")[0]?.[1]).toEqual({ id: "user_1" });
+    expect(callsOf("template_delete")).toHaveLength(1);
+    expect(callsOf("template_delete")[0]?.[1]).toEqual({ id: LIVE_USER.id });
   });
+});
 
-  it("编辑正文 300ms 防抖后带 body 重新预览", async () => {
-    const host = await renderPage();
-    const textarea = host.querySelector("textarea");
-    if (!(textarea instanceof HTMLTextAreaElement)) throw new Error("未找到正文编辑器");
-
-    await act(async () => {
-      setTextareaValue(textarea, "EDITED BODY {{ x }}");
-    });
-    // 防抖窗口内不应带着新正文请求（此前仍是 template_id 路径）
-    expect(
-      buildCalls("prompt_build_live").some(
-        (callArgs) =>
-          (callArgs[1] as { request?: { body?: string | null } }).request?.body ===
-          "EDITED BODY {{ x }}",
-      ),
-    ).toBe(false);
-
-    await act(async () => {
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 350);
-      });
-    });
-    await flush();
-
-    const calls = buildCalls("prompt_build_live");
-    expect(calls.at(-1)?.[1]).toMatchObject({ request: { body: "EDITED BODY {{ x }}" } });
-  });
-
-  it("复盘模板时段超 90 天时给出友好提示（不是错误码）", async () => {
+describe("PromptPage 语法校验", () => {
+  it("正文防抖 300ms 后才校验：停手前不重复发请求", async () => {
     const host = await renderPage();
 
-    await click(buttonContaining(host, "复盘：绩效与归因"));
-
-    const inputs = [...host.querySelectorAll('input[type="datetime-local"]')];
-    const fromInput = inputs[0];
-    if (!(fromInput instanceof HTMLInputElement)) throw new Error("未找到开始时间输入");
+    await advance(350);
+    expect(callsOf("template_check")).toHaveLength(1);
+    expect(callsOf("template_check")[0]?.[1]).toEqual({ body: LIVE_BUILTIN.body });
 
     await act(async () => {
-      setInputValue(fromInput, msToLocalInput(Date.now() - MAX_RANGE_MS - DAY_MS));
+      setTextareaValue(bodyTextarea(host), "EDITED {{ alpha }}");
     });
-    await flush();
+    // 防抖窗口内不发请求
+    expect(callsOf("template_check")).toHaveLength(1);
 
-    expect(host.textContent).toContain(S.prompt.context.rangeTooLarge);
-    expect(host.textContent).not.toContain("RangeTooLarge");
+    await advance(350);
+    const calls = callsOf("template_check");
+    expect(calls).toHaveLength(2);
+    expect(calls.at(-1)?.[1]).toEqual({ body: "EDITED {{ alpha }}" });
+  });
+
+  it("成功时显示变量个数与逐个变量名", async () => {
+    const host = await renderPage();
+    await advance(350);
+
+    expect(host.textContent).toContain(S.prompt.editor.checkTitle);
+    expect(host.textContent).toContain(S.prompt.check.ok(CHECKED_VARIABLES.length));
+    expect(host.textContent).toContain(
+      S.prompt.check.variables(CHECKED_VARIABLES.join(" · ")),
+    );
+  });
+
+  it("正文为空时不做校验（也不发请求），只说明原因", async () => {
+    const host = await renderPage();
+
+    await act(async () => {
+      setTextareaValue(bodyTextarea(host), "   ");
+    });
+    await advance(350);
+
+    expect(host.textContent).toContain(S.prompt.editor.checkEmpty);
+    expect(callsOf("template_check")).toHaveLength(0);
+  });
+
+  it("后端报错时原样展示错误标题与消息（变量名 / 语法位置是唯一线索）", async () => {
+    const message = "模板语法错误：意外的 '}}'（第 3 行）";
+    callMock.mockImplementation((cmd: string) =>
+      cmd === "template_check"
+        ? Promise.reject({ code: "Template", message, retryable: false })
+        : defaultMock(cmd),
+    );
+
+    const host = await renderPage();
+    await advance(350);
+
+    expect(host.textContent).toContain(S.prompt.check.errorTitle);
+    expect(host.textContent).toContain(message);
   });
 });

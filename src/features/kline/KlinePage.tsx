@@ -21,6 +21,7 @@ import { formatTimestamp } from "../prompt/format";
 import { PreviewPanel } from "../prompt/PreviewPanel";
 import { TemplateLibrary } from "../prompt/TemplateLibrary";
 import { useTemplates } from "../prompt/useTemplates";
+import { usePrivacy } from "../settings/usePrivacy";
 import { ProgressBar } from "../review/ProgressBar";
 import { SeriesReportList } from "../review/SeriesReportList";
 import { formatDurationMs } from "../review/format";
@@ -52,6 +53,9 @@ export function KlinePage() {
   const bars = useKlineBars();
   const watchlist = useWatchlist();
   const templates = useTemplates();
+  // 行情上下文里没有敏感数值，等级对它没有实际影响；这里显示它只是为了让
+  // 「隐私等级在哪设」这个问题在每个生成页都有答案。
+  const privacy = usePrivacy();
 
   const planMutation = useKlinePlan();
   const fetchState = useKlineFetch();
@@ -118,7 +122,6 @@ export function KlinePage() {
     buildMutation.mutate({
       plan_id: plan.id,
       template_id: templateId,
-      body: null,
       indicators,
     });
   };
@@ -366,7 +369,9 @@ export function KlinePage() {
             onSelect={setPickedTemplate}
           />
 
-          <p className="text-xs text-neutral-500">{S.kline.privacyNote}</p>
+          <p className="text-xs text-neutral-500">
+            {`${S.kline.privacyNote}（当前：${S.settings.privacy[privacy].label}，在设置页统一调整）`}
+          </p>
 
           <div className="flex flex-wrap items-center gap-3">
             <button

@@ -15,7 +15,6 @@ use crate::fetch::plan::{self, KlinePlan};
 use crate::fetch::registry::FetchRegistry;
 use crate::market::series::{self, IndicatorColumn, IndicatorSpec, MarketSeries};
 use crate::okx::client::OkxClient;
-use crate::prompt::templates::TemplateKind;
 use crate::prompt::{context, privacy::PrivacyLevel};
 use crate::storage::Db;
 
@@ -119,14 +118,18 @@ pub async fn kline_cancel(registry: State<'_, FetchRegistry>, plan_id: String) -
 #[derive(Debug, Deserialize)]
 pub struct KlineBuildRequest {
     pub plan_id: String,
-    /// 模板 id；给了 `body` 时以 `body` 为准（编辑器实时预览）
+    /// 模板 id
     #[serde(default)]
     pub template_id: Option<String>,
-    #[serde(default)]
-    pub body: Option<String>,
     /// 逐根附列的指标清单，缺省 = 不带指标（只要原始 K 线）
     #[serde(default)]
     pub indicators: Vec<IndicatorSpec>,
+    /// 隐私等级覆盖；缺省时用**全局设置**（见 `settings::read_privacy`）。
+    ///
+    /// 行情上下文里没有任何敏感数值，所以三个等级产出逐字节相同
+    /// （有测试断言）——这个字段存在只是为了让三条管线的契约一致。
+    #[serde(default)]
+    pub privacy: Option<PrivacyLevel>,
 }
 
 /// 装配并渲染行情提示词。
@@ -142,13 +145,8 @@ pub async fn kline_build(
     let plan = registry.kline_plan(&request.plan_id)?;
     let specs = series::validate_specs(&request.indicators)?;
 
-    let template = crate::commands::prompt::resolve_template(
-        &db,
-        request.template_id.as_deref(),
-        request.body,
-        TemplateKind::Market,
-    )
-    .await?;
+    let template =
+        crate::commands::prompt::resolve_template(&db, request.template_id.as_deref()).await?;
 
     let mut damage: Vec<String> = Vec::new();
     let mut series: Vec<MarketSeries> = Vec::with_capacity(plan.bars.len());
@@ -172,22 +170,23 @@ pub async fn kline_build(
         series.push(market_series);
     }
 
+    // 与实盘 / 复盘同一条规则：未显式指定就读全局设置。行情上下文里没有敏感数值，
+    // 所以等级对它没有实际影响——但仍走同一个入口，避免出现「这一条不认全局设置」
+    // 这种需要单独解释的例外。
+    let level = match request.privacy {
+        Some(level) => level,
+        None => crate::settings::read_privacy(&db).await?,
+    };
+
     let assembled = context::market(
         &plan.inst_id,
         &series,
-        // 行情不是隐私（§6.7）：这里传 L0，界面也不显示隐私选择器——
-        // 显示它会让人以为「切到 L2 能脱敏价格」，而价格本来就是公开数据。
-        PrivacyLevel::L0,
+        level,
         damage,
         crate::storage::now_ms(),
     );
 
-    crate::commands::prompt::finish(
-        &template,
-        &assembled.context,
-        assembled.warnings,
-        PrivacyLevel::L0,
-    )
+    crate::commands::prompt::finish(&template, &assembled.context, assembled.warnings, level)
 }
 
 /// 从库里读一个周期的 K 线并算好指标。

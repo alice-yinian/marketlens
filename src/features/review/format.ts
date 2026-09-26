@@ -35,6 +35,19 @@ export function rangeError(from: number, to: number): RangeProblem | null {
 }
 
 /** 时段天数（向上取整，用于提示「当前约 N 天」） */
+/**
+ * 时段问题的中文说明。
+ *
+ * 收敛到这里是因为它现在有**两个**使用点：`RangePicker` 的行内提示，以及
+ * 「生成提示词」按钮的禁用原因——同一份时段判断在页面上有三个动作（生成计划 /
+ * 装配 / 生成提示词），三处各写一份文案迟早会不一致。
+ */
+export function rangeProblemText(problem: RangeProblem): string {
+  if (problem === "order") return S.review.range.orderInvalid;
+  if (problem === "tooLarge") return S.review.range.tooLarge;
+  return S.review.range.invalid;
+}
+
 export function rangeDays(from: number, to: number): number {
   if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return 0;
   return Math.ceil((to - from) / DAY_MS);

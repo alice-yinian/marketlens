@@ -1,12 +1,20 @@
 //! 用户设置。
 
 use crate::error::{AppError, AppResult};
+use crate::prompt::privacy::PrivacyLevel;
 use crate::storage::Db;
 
 pub const KEY_WATCHLIST: &str = "watchlist";
 
 /// 引导完成标志的键名。
 pub const KEY_ONBOARDING_DONE: &str = "onboarding_done";
+
+/// 全局隐私等级的键名。
+///
+/// **全局唯一是刻意的**：它同时作用于实盘 / 复盘 / 行情三条提示词管线，
+/// 不存在「这个页面用 L1、那个页面用 L0」的状态——那种状态下用户根本无法解释
+/// 「为什么同一笔仓位在 A 页是百分比、在 B 页是原始金额」。
+pub const KEY_PRIVACY_LEVEL: &str = "privacy_level";
 
 /// 网络代理的键名。未设置 = 直连（并**沿用系统/环境变量代理**，见 `reqwest` 的 `system-proxy`）。
 ///
@@ -167,6 +175,32 @@ pub fn validate_proxy(raw: &str) -> AppResult<String> {
     Ok(trimmed.trim_end_matches('/').to_string())
 }
 
+/// 读取全局隐私等级。未设置或内容损坏时回落到默认值（L1）。
+///
+/// 与代理一样：配置坏了**不阻塞启动**，回落到默认值并留日志——
+/// 一个填错的值不该让整个应用起不来，而且默认值本身就是设计确认过的选择。
+pub async fn read_privacy(db: &Db) -> AppResult<PrivacyLevel> {
+    let Some(raw) = db.get_setting(KEY_PRIVACY_LEVEL).await? else {
+        return Ok(PrivacyLevel::default());
+    };
+
+    match serde_json::from_str::<PrivacyLevel>(&raw) {
+        Ok(level) => Ok(level),
+        Err(err) => {
+            tracing::warn!(%err, "隐私等级配置无法解析，本轮回落默认值");
+            Ok(PrivacyLevel::default())
+        }
+    }
+}
+
+/// 写入全局隐私等级，返回落库后的值。
+pub async fn write_privacy(db: &Db, level: PrivacyLevel) -> AppResult<PrivacyLevel> {
+    let raw = serde_json::to_string(&level)
+        .map_err(|err| AppError::Config(format!("隐私等级无法序列化：{err}")))?;
+    db.set_setting(KEY_PRIVACY_LEVEL, &raw).await?;
+    Ok(level)
+}
+
 /// 生成可安全写进日志的代理地址：只保留用户名，密码换成 `***`。
 ///
 /// 代理 URL 是最容易被顺手 `tracing::info!(%url, ...)` 打出来的东西，
@@ -184,6 +218,35 @@ pub fn redact_proxy(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 默认值是 L1——设计文档确认过的那一档，不是「随便取一个」。
+    #[tokio::test]
+    async fn privacy_defaults_to_l1_when_unset() {
+        let db = Db::open_in_memory().await.expect("内存库创建失败");
+        assert_eq!(read_privacy(&db).await.expect("应能读取"), PrivacyLevel::L1);
+    }
+
+    #[tokio::test]
+    async fn privacy_round_trips() {
+        let db = Db::open_in_memory().await.expect("内存库创建失败");
+
+        for level in [PrivacyLevel::L0, PrivacyLevel::L2] {
+            write_privacy(&db, level).await.expect("应能写入");
+            assert_eq!(read_privacy(&db).await.expect("应能读取"), level);
+        }
+    }
+
+    /// 配置损坏时回落默认值并留日志，而不是让启动或生成失败——
+    /// 一个填错的值不该让应用不可用，而默认值本身是安全的那一档。
+    #[tokio::test]
+    async fn corrupt_privacy_falls_back_to_the_default() {
+        let db = Db::open_in_memory().await.expect("内存库创建失败");
+        db.set_setting(KEY_PRIVACY_LEVEL, "\"L9\"")
+            .await
+            .expect("应能写入");
+
+        assert_eq!(read_privacy(&db).await.expect("应能读取"), PrivacyLevel::L1);
+    }
 
     #[test]
     fn default_watchlist_matches_confirmed_preselection() {

@@ -1,6 +1,6 @@
 /**
  * 设置页纯函数测试：字节数人类可读、行数千分位、保留策略的空值语义、
- * 清理结果（空 deleted / 文件未变小）与脱敏明细的文案。
+ * 清理结果（空 deleted / 文件未变小）与脱敏明细的文案、全局隐私等级。
  *
  * 这些正是「拿不到的数据必须显式说明」这条铁律最容易出错的地方，
  * 所以每一条都直接断言「不编造数字」。
@@ -10,10 +10,15 @@ import { describe, expect, it } from "vitest";
 import { S } from "../../lib/strings";
 import type { TableStat } from "../../lib/types";
 import {
+  DEFAULT_PRIVACY,
+  PRIVACY_LEVELS,
   cleanupDeletedLines,
   cleanupFreedText,
   formatBytes,
   formatCount,
+  privacyBadgeClass,
+  privacyDescription,
+  privacyLabel,
   redactionLines,
   retentionText,
 } from "./format";
@@ -103,5 +108,43 @@ describe("redactionLines", () => {
     expect(
       redactionLines([{ pattern: "疑似密钥的长随机串（20 位以上字母数字）", hits: 3 }]),
     ).toEqual([S.settings.diagnostics.redactionHit("疑似密钥的长随机串（20 位以上字母数字）", 3)]);
+  });
+});
+
+/**
+ * 隐私等级从提示词页搬到设置页（全局生效），这组用例随之搬来，
+ * 文案也改为读 `S.settings.privacy`——它必须与 Rust 的 `PrivacyLevel::default()`
+ * 一致，且每一档都得说清「它到底做了什么」。
+ */
+describe("隐私等级", () => {
+  it("三档齐全，默认 L1", () => {
+    expect(PRIVACY_LEVELS).toEqual(["L0", "L1", "L2"]);
+    expect(DEFAULT_PRIVACY).toBe("L1");
+  });
+
+  it("每档都有名称与「做了什么」的人话说明，且互不相同", () => {
+    const descs = PRIVACY_LEVELS.map((level) => {
+      const desc = privacyDescription(level);
+      expect(desc.length).toBeGreaterThan(0);
+      expect(privacyLabel(level)).toContain(level);
+      return desc;
+    });
+    const [l0, l1, l2] = descs;
+    expect(l0).not.toBe(l1);
+    expect(l1).not.toBe(l2);
+    expect(l0).not.toBe(l2);
+    // L0 必须明确写出会带完整金额
+    expect(privacyDescription("L0")).toBe(S.settings.privacy.L0.desc);
+    expect(privacyDescription("L0")).toContain("完整金额");
+    // L2 必须明确不含金额与数量
+    expect(privacyDescription("L2")).toContain("不含任何金额与数量");
+  });
+
+  it("选中态与未选中态在视觉上可区分，且 L0 与 L2 不同色", () => {
+    for (const level of PRIVACY_LEVELS) {
+      expect(privacyBadgeClass(level, true)).not.toBe(privacyBadgeClass(level, false));
+    }
+    // 未选中一律中性灰，选中后才按危险程度分色：L0（会带出完整金额）必须与 L2 一眼可分
+    expect(privacyBadgeClass("L0", true)).not.toBe(privacyBadgeClass("L2", true));
   });
 });

@@ -95,12 +95,10 @@ export interface SaveTemplateRequest {
 /**
  * `prompt_build_live` 的入参（对应 Rust 的 `BuildLiveRequest`）。
  *
- * `body` 优先于 `template_id`：编辑器未保存的正文走这里实时预览。
- * `privacy` 缺省 L1；`force` 绕过行情 30 秒缓存。
+ * `privacy` 缺省时由后端读**全局隐私设置**；`force` 绕过行情 30 秒缓存。
  */
 export interface BuildLiveRequest {
   template_id?: string | null;
-  body?: string | null;
   privacy?: PrivacyLevel | null;
   credential_id?: string | null;
   force?: boolean | null;
@@ -110,10 +108,10 @@ export interface BuildLiveRequest {
  * `prompt_build_review` 的入参（对应 Rust 的 `BuildReviewRequest`）。
  *
  * 会先同步官方历史仓位，首次可能慢几秒；时段上限 90 天（超限 `RangeTooLarge`）。
+ * `privacy` 缺省时同样读全局设置。
  */
 export interface BuildReviewRequest {
   template_id?: string | null;
-  body?: string | null;
   privacy?: PrivacyLevel | null;
   credential_id?: string | null;
   from: number;
@@ -152,7 +150,6 @@ export interface KlinePlanRequest {
 export interface KlineBuildRequest {
   plan_id: string;
   template_id?: string | null;
-  body?: string | null;
   indicators?: IndicatorSpec[];
 }
 
@@ -214,6 +211,17 @@ export interface Commands {
   template_save: { args: { request: SaveTemplateRequest }; result: PromptTemplate };
   /** 删除用户模板；内置模板不可删除（后端会明确报错） */
   template_delete: { args: { id: string }; result: void };
+  /**
+   * 校验模板正文的语法，并返回它引用了哪些变量。
+   *
+   * **不需要上下文、也不联网**：模板库用它给作者即时反馈。真正的渲染
+   * （含「缺哪个变量」）在各页面的生成流程里——那里才有上下文。
+   */
+  template_check: { args: { body: string }; result: string[] };
+  /** 读取全局隐私等级（三条提示词管线共用） */
+  privacy_get: { args: undefined; result: PrivacyLevel };
+  /** 设置全局隐私等级；改完各页面的提示词会按新等级重新生成 */
+  privacy_set: { args: { level: PrivacyLevel }; result: PrivacyLevel };
   /** 生成实盘提示词；命中行情 30 秒缓存则不重复请求 */
   prompt_build_live: { args: { request: BuildLiveRequest }; result: PromptOutput };
   /** 生成复盘提示词；会先同步官方历史仓位，首次可能慢几秒 */
