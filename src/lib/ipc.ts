@@ -25,6 +25,8 @@ import type {
   Progress,
   PromptOutput,
   PromptTemplate,
+  ProxyProbe,
+  ProxySettings,
   ReviewContext,
   TemplateKind,
   VaultStatus,
@@ -116,6 +118,15 @@ export interface BuildReviewRequest {
   bar?: string | null;
 }
 
+/**
+ * `proxy_set` 的入参（对应 Rust 的 `SetProxyInput`）。
+ *
+ * `url` 为 `null` 或空串 = 清除显式配置（回到系统 / 环境变量代理）。
+ */
+export interface SetProxyInput {
+  url?: string | null;
+}
+
 /** 命令名 → { 入参, 出参 } 的单一事实来源 */
 export interface Commands {
   app_info: { args: undefined; result: AppInfo };
@@ -190,6 +201,23 @@ export interface Commands {
   cache_cleanup: { args: undefined; result: CleanupReport };
   /** 一键导出脱敏诊断包（同时落盘），返回包内容与落盘路径 */
   diagnostics_export: { args: undefined; result: DiagnosticExport };
+
+  // ---- 网络代理 ----
+  /** 读取当前代理；`url === null` 表示未显式配置（此时沿用系统/环境变量代理） */
+  proxy_get: { args: undefined; result: ProxySettings };
+  /**
+   * 保存代理并**立即生效**（后端热重建 HTTP 客户端，不需要重启）。
+   *
+   * `url` 为 `null` 或空串 = 清除显式配置。
+   */
+  proxy_set: { args: { input: SetProxyInput }; result: ProxySettings };
+  /**
+   * 用 OKX 最轻量的公开端点验证代理是否真的通。
+   *
+   * 探测失败**不是命令错误**：返回 `{ok: false, error}` 而不是抛异常，
+   * 界面才能把「地址填错」与「代理进程没开」分开提示。
+   */
+  proxy_test: { args: undefined; result: ProxyProbe };
 }
 
 /**

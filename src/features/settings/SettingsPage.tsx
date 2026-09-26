@@ -15,6 +15,7 @@ import { useState } from "react";
 import { S } from "../../lib/strings";
 import type { DiagnosticExport } from "../../lib/types";
 import { ErrorPanel } from "../account/ErrorPanel";
+import { errorPayloadOf } from "../live/errors";
 import { formatLocalTime } from "../live/format";
 import {
   cleanupDeletedLines,
@@ -25,6 +26,7 @@ import {
   retentionText,
 } from "./format";
 import { useCacheCleanup, useCacheStats, useDiagnosticsExport } from "./useSettings";
+import { useClearProxy, useProxySettings, useSaveProxy } from "./useProxySettings";
 
 async function copyText(text: string): Promise<boolean> {
   const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
@@ -56,6 +58,126 @@ function Card({
       </div>
       {children}
     </section>
+  );
+}
+
+const INPUT_CLASS =
+  "mt-1 w-full rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 outline-none focus:border-neutral-500";
+
+const PRIMARY_BUTTON =
+  "rounded-md bg-neutral-100 px-3 py-1.5 text-sm font-medium text-neutral-900 hover:bg-white disabled:cursor-not-allowed disabled:opacity-50";
+
+const SECONDARY_BUTTON =
+  "rounded-md border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50";
+
+/**
+ * 网络代理：引导里配过一次，这里是随时可改的入口。
+ *
+ * 「保存」与「测试」是同一个动作（见 `useSaveProxy`）：分开的话，用户会停在
+ * 「已保存但不知道通不通」的状态——而受限网络下这恰恰是最容易出问题的地方。
+ */
+function ProxyCard() {
+  const current = useProxySettings();
+  const save = useSaveProxy();
+  const clear = useClearProxy();
+
+  // `null` = 用户还没改过输入，此时跟随已保存的值。
+  const [input, setInput] = useState<string | null>(null);
+  const value = input ?? current.data?.url ?? "";
+  const trimmed = value.trim();
+
+  // 探测结果只对**当前输入**有效：改过输入后旧结果立刻作废。
+  const probe = save.isSuccess && save.variables.trim() === trimmed ? save.data.probe : null;
+  const saveError = save.isError ? errorPayloadOf(save.error) : null;
+
+  return (
+    <Card title={S.settings.proxy.title} subtitle={S.settings.proxy.subtitle}>
+      {current.isPending ? (
+        <p className="text-sm text-neutral-400">{S.boot.loading}</p>
+      ) : current.isError && current.data === undefined ? (
+        <ErrorPanel
+          title={S.settings.proxy.loadErrorTitle}
+          error={current.error}
+          onRetry={() => void current.refetch()}
+          busy={current.isFetching}
+        />
+      ) : (
+        <>
+          <label className="block text-sm text-neutral-300">
+            {S.settings.proxy.url}
+            <input
+              className={INPUT_CLASS}
+              placeholder={S.settings.proxy.placeholder}
+              value={value}
+              onChange={(event) => setInput(event.target.value)}
+            />
+          </label>
+
+          <div className="flex flex-col gap-1">
+            <p className="text-xs text-neutral-500">{S.settings.proxy.schemes}</p>
+            <p className="text-xs text-neutral-600">{S.settings.proxy.credentialWarning}</p>
+          </div>
+
+          {saveError === null ? null : (
+            <div className="rounded-xl border border-red-900/60 bg-red-950/30 p-3 text-sm">
+              <p className="font-medium text-red-300">{S.settings.proxy.saveErrorTitle}</p>
+              <p className="mt-1 font-mono break-all text-red-200/90">{saveError.message}</p>
+              <p className="mt-1 text-xs text-red-300/70">
+                {S.onboarding.errorCode(saveError.code)}
+              </p>
+            </div>
+          )}
+
+          {probe === null ? null : probe.ok ? (
+            <div className="rounded-xl border border-emerald-900/60 bg-emerald-950/30 p-3 text-sm">
+              <p className="text-emerald-300">{S.settings.proxy.ok(probe.latency_ms)}</p>
+              <p className="mt-1 text-xs text-emerald-200/70">
+                {S.settings.proxy.serverTime(
+                  formatLocalTime(probe.server_time_ms) ?? S.account.na,
+                )}
+              </p>
+              <p className="mt-1 text-xs text-emerald-200/70">{S.settings.proxy.saved}</p>
+            </div>
+          ) : (
+            <div
+              role="alert"
+              className="rounded-xl border border-red-900/60 bg-red-950/30 p-3 text-sm"
+            >
+              <p className="font-medium text-red-300">{S.settings.proxy.failTitle}</p>
+              <p className="mt-1 font-mono break-all text-red-200/90">
+                {probe.error ?? S.account.na}
+              </p>
+              <p className="mt-1 text-xs text-red-300/70">{S.settings.proxy.failHint}</p>
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className={PRIMARY_BUTTON}
+              disabled={save.isPending}
+              onClick={() => save.mutate(trimmed)}
+            >
+              {save.isPending ? S.settings.proxy.saving : S.settings.proxy.save}
+            </button>
+
+            {current.data?.url == null ? null : (
+              <button
+                type="button"
+                className={SECONDARY_BUTTON}
+                disabled={clear.isPending}
+                onClick={() => {
+                  setInput("");
+                  clear.mutate();
+                }}
+              >
+                {S.onboarding.proxy.skip}
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </Card>
   );
 }
 
@@ -377,6 +499,7 @@ export function SettingsPage() {
         <p className="mt-0.5 text-sm text-neutral-400">{S.settings.subtitle}</p>
       </header>
 
+      <ProxyCard />
       <CacheCard />
       <DiagnosticsCard />
     </main>

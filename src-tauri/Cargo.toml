@@ -35,11 +35,19 @@ ts-rs = { version = "12", features = ["serde-compat"] }
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# `system-proxy` 与 `socks` 都是为了「用户能连上 OKX」这件事：
+# - `system-proxy`：用户没在引导里填代理时，沿用系统/环境变量代理
+#   （Windows 系统代理、HTTP(S)_PROXY / ALL_PROXY）。它是 reqwest 的默认特性之一，
+#   关掉它意味着「系统代理明明配好了，应用却直连失败」，而错误信息里毫无线索。
+# - `socks`：本地代理（Clash / v2rayN / Shadowsocks）多数按 SOCKS5 暴露。
+#   该特性本身为空、不引入新依赖。
 reqwest = { version = "0.13.5", default-features = false, features = [
     "json",
     "rustls",
     "http2",
     "query",
+    "socks",
+    "system-proxy",
 ] }
 futures = { version = "0.3.34", default-features = false, features = ["std", "alloc"] }
 hmac = "0.13.0"

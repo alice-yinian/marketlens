@@ -4,7 +4,7 @@
  * 以及主界面「重新配置」入口会以 reconfigure 形态打开引导。
  *
  * 这是最容易回归的一处——引导第 1 步解锁后一旦回写缓存，
- * 就会被顶层判定为「已解锁」而跳过第 2、3 步。
+ * 就会被顶层判定为「已解锁」而跳过第 2、3、4 步。
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
@@ -162,7 +162,7 @@ describe("App 闸门", () => {
     expect(callMock).toHaveBeenCalledWith("credentials_list");
   });
 
-  it("「重新配置」入口以 reconfigure 形态打开引导（不含第 1 步）", async () => {
+  it("「重新配置」入口以 reconfigure 形态打开引导（不含第 1 步，从代理开始）", async () => {
     mockIpc({
       vault_exists: true,
       vault_unlocked: true,
@@ -172,7 +172,7 @@ describe("App 闸门", () => {
     const host = await renderApp();
     await click(button(host, S.nav.configure));
     expect(host.textContent).toContain(S.onboarding.reconfigureTitle);
-    expect(host.textContent).toContain(S.onboarding.credential.title);
+    expect(host.textContent).toContain(S.onboarding.proxy.title);
     expect(host.textContent).not.toContain(S.onboarding.vault.irrecoverableTitle);
   });
 });

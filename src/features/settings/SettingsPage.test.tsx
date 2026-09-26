@@ -7,7 +7,8 @@
  * - `bytes_before === bytes_after` 不编造释放量；
  * - `redactions` 为空显示对应文案；
  * - 字节数格式化为人类可读；
- * - 诊断结果展示路径 / 大小 / 凭据属性 / 版本信息。
+ * - 诊断结果展示路径 / 大小 / 凭据属性 / 版本信息；
+ * - 代理「保存」必然伴随一次探测，而「清除」不做无谓的探测。
  *
  * 只 mock IPC 出口（lib/ipc），页面与纯函数全部真实执行。
  */
@@ -78,6 +79,8 @@ function defaultMock(cmd: string): Promise<unknown> {
       } satisfies CleanupReport);
     case "diagnostics_export":
       return Promise.resolve(exportOf());
+    case "proxy_get":
+      return Promise.resolve({ url: null });
     default:
       return Promise.reject(new Error(`unexpected command: ${cmd}`));
   }
@@ -262,5 +265,80 @@ describe("SettingsPage 诊断导出", () => {
       S.settings.diagnostics.redactionHit("家目录绝对路径（会暴露用户名）", 2),
     );
     expect(host.textContent).not.toContain(S.settings.diagnostics.redactionNone);
+  });
+});
+
+describe("SettingsPage 网络代理", () => {
+  const PROXY = "http://127.0.0.1:7890";
+  const OK_PROBE = { ok: true, latency_ms: 37, server_time_ms: 1_700_000_000_000, error: null };
+
+  function input(host: HTMLElement): HTMLInputElement {
+    const found = host.querySelector("input");
+    if (found === null) throw new Error("代理输入框未渲染");
+    return found;
+  }
+
+  async function setValue(target: HTMLInputElement, value: string) {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(target, value);
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+  }
+
+  it("保存会立即测试，成功时展示往返耗时并说明已生效", async () => {
+    callMock.mockImplementation((cmd: string) => {
+      if (cmd === "proxy_set") return Promise.resolve({ url: PROXY });
+      if (cmd === "proxy_test") return Promise.resolve(OK_PROBE);
+      return defaultMock(cmd);
+    });
+    const host = await renderPage();
+    await setValue(input(host), PROXY);
+    await click(button(host, S.settings.proxy.save));
+
+    expect(callMock).toHaveBeenCalledWith("proxy_set", { input: { url: PROXY } });
+    expect(callsOf("proxy_test")).toHaveLength(1);
+    expect(host.textContent).toContain(S.settings.proxy.ok(37));
+    expect(host.textContent).toContain(S.settings.proxy.saved);
+  });
+
+  it("代理不通时给出原因与排查提示", async () => {
+    callMock.mockImplementation((cmd: string) => {
+      if (cmd === "proxy_set") return Promise.resolve({ url: PROXY });
+      if (cmd === "proxy_test") {
+        return Promise.resolve({
+          ok: false,
+          latency_ms: 3,
+          server_time_ms: null,
+          error: "网络请求失败：代理返回 502",
+        });
+      }
+      return defaultMock(cmd);
+    });
+    const host = await renderPage();
+    await setValue(input(host), PROXY);
+    await click(button(host, S.settings.proxy.save));
+
+    expect(host.textContent).toContain(S.settings.proxy.failTitle);
+    expect(host.textContent).toContain("代理返回 502");
+    expect(host.textContent).toContain(S.settings.proxy.failHint);
+  });
+
+  it("已保存配置时提供「不使用代理」，点击后清除并回填为空", async () => {
+    callMock.mockImplementation((cmd: string) => {
+      if (cmd === "proxy_get") return Promise.resolve({ url: PROXY });
+      if (cmd === "proxy_set") return Promise.resolve({ url: null });
+      return defaultMock(cmd);
+    });
+    const host = await renderPage();
+    expect(input(host).value).toBe(PROXY);
+
+    await click(button(host, S.onboarding.proxy.skip));
+
+    expect(callMock).toHaveBeenCalledWith("proxy_set", { input: { url: null } });
+    expect(input(host).value).toBe("");
+    // 清除不该顺带发一次探测请求
+    expect(callsOf("proxy_test")).toHaveLength(0);
   });
 });

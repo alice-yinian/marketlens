@@ -307,6 +307,17 @@ pub struct Envelope<T> {
     pub data: Vec<T>,
 }
 
+/// `GET /api/v5/public/time`
+///
+/// 最轻量的公开端点，用作代理配置后的连通性探针：它不依赖行情订阅、
+/// 不占限流重配额，却足以区分「代理没生效」与「代理生效但权限/参数有问题」。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerTime {
+    #[serde(deserialize_with = "de::ts")]
+    pub ts: i64,
+}
+
 /// `GET /api/v5/market/ticker`
 ///
 /// 注意：实测该响应**不含 `idxPx`**，基差需另取 `mark-price` 与 `index-tickers`。

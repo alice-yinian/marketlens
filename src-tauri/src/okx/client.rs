@@ -3,6 +3,7 @@
 //! 刻意只提供 GET：公开端点直接请求，私有端点带签名。**本类型不实现任何 POST 能力**，
 //! 所以「应用会不会偷偷下单」这个问题在类型层面就有答案（ADR #6）。
 
+use std::sync::RwLock;
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
@@ -20,22 +21,40 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const BACKOFF_CAP: Duration = Duration::from_millis(30_000);
 
 pub struct OkxClient {
-    http: reqwest::Client,
+    /// 用 `RwLock` 而不是直接持有 `Client`：代理是**可在引导里当场修改**的设置，
+    /// 改完必须立刻生效，不能要求用户重启应用。`reqwest::Client` 的克隆是廉价的
+    /// （内部是 `Arc`），所以每次请求克隆一次不构成开销。
+    http: RwLock<reqwest::Client>,
     limiter: RateLimiter,
 }
 
 impl OkxClient {
+    /// 不带显式代理的客户端。
+    ///
+    /// 注意「不带显式代理」不等于「直连」：`reqwest` 的 `system-proxy` 特性
+    /// 会让它去读系统/环境变量代理。用户填了显式代理时那条路径会被关闭
+    /// （见 [`OkxClient::reconfigure`]），优先级是**显式配置 > 系统设置**。
     pub fn new() -> AppResult<Self> {
-        let http = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .user_agent(concat!("MarketLens/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|err| AppError::Http(err.to_string()))?;
-
         Ok(Self {
-            http,
+            http: RwLock::new(build_http(None)?),
             limiter: RateLimiter::new(),
         })
+    }
+
+    /// 应用（`Some`）或清除（`None`）网络代理，并**立即**替换底层 HTTP 客户端。
+    ///
+    /// 之所以能热替换：`reqwest` 的 `Client` 只是连接池与配置的句柄，
+    /// 已在进行中的请求继续用旧句柄跑完，新请求从下一次开始走新代理——
+    /// 不会打断用户正在看的行情刷新。
+    pub fn reconfigure(&self, proxy: Option<&str>) -> AppResult<()> {
+        let next = build_http(proxy)?;
+        *self.http.write().expect("HTTP 客户端锁被毒化") = next;
+        Ok(())
+    }
+
+    /// 取出当前 HTTP 客户端（廉价克隆）。
+    fn http(&self) -> reqwest::Client {
+        self.http.read().expect("HTTP 客户端锁被毒化").clone()
     }
 
     /// 公开 GET。
@@ -73,13 +92,16 @@ impl OkxClient {
         group: RateGroup,
         creds: Option<&Credentials>,
     ) -> AppResult<Vec<T>> {
+        // 一次请求内固定用同一个客户端：做重试的是**同一个**代理路径，
+        // 不会出现「首次直连、重试走代理」这种无法解释的日志。
+        let http = self.http();
         let mut attempt: u32 = 0;
 
         loop {
             attempt += 1;
             self.limiter.acquire(group).await;
 
-            let mut builder = self.http.get(url.clone());
+            let mut builder = http.get(url.clone());
 
             if let Some(creds) = creds {
                 // 关键：同一个 timestamp 字符串既参与签名也进请求头。
@@ -158,6 +180,28 @@ impl OkxClient {
             }
         }
     }
+}
+
+/// 按给定代理构造 HTTP 客户端。
+///
+/// `proxy = None` 时**不显式设置**代理，`reqwest` 的 `system-proxy` 会接管
+/// （Windows 系统代理 / `HTTP(S)_PROXY` / `ALL_PROXY`）。`Some` 时显式代理会
+/// 关掉系统代理路径——用户手填的地址必须赢过系统设置，否则「我明明改了代理却没用」
+/// 会成为一个无法从界面上解释的现象。
+fn build_http(proxy: Option<&str>) -> AppResult<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .user_agent(concat!("MarketLens/", env!("CARGO_PKG_VERSION")));
+
+    if let Some(proxy) = proxy {
+        let parsed = reqwest::Proxy::all(proxy)
+            .map_err(|err| AppError::Config(format!("代理地址不可用：{err}")))?;
+        builder = builder.proxy(parsed);
+    }
+
+    builder
+        .build()
+        .map_err(|err| AppError::Http(err.to_string()))
 }
 
 /// 构造 URL，并同时给出**用于签名的 requestPath**。
@@ -302,5 +346,91 @@ mod tests {
         assert_eq!(stamp.len(), 24, "长度应为 24（含毫秒）：{stamp}");
         assert!(stamp.contains('.'), "必须带毫秒：{stamp}");
         assert_eq!(stamp.matches('.').count(), 1, "只有一处小数点：{stamp}");
+    }
+
+    /// 一个最小的假 HTTP 代理：记录它收到的第一行请求，回 502 后关闭。
+    ///
+    /// 刻意用 `std::net` 而不是 `tokio::net`：测试只需要「有人连上来、说了什么」，
+    /// 用阻塞线程实现最直接，也不必为一个测试引入额外的 tokio 特性。
+    fn spawn_recording_proxy() -> (u16, std::sync::mpsc::Receiver<String>) {
+        use std::io::{BufRead, BufReader, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("绑定假代理失败");
+        let port = listener.local_addr().expect("读取端口失败").port();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut reader = BufReader::new(stream.try_clone().expect("克隆流失败"));
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_ok() {
+                let _ = tx.send(line.trim().to_string());
+            }
+            // 直接拒绝：本测试只关心「请求去了哪里」，不关心代理是否真的转发了。
+            let _ = stream.write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+        });
+
+        (port, rx)
+    }
+
+    /// 代理必须**真的作用到请求上**。
+    ///
+    /// 只断言「`reconfigure` 没报错」是自证式测试：代理根本没接上时它照样通过。
+    /// 所以这里起一个会记录请求行的假代理，断言 OKX 的 HTTPS 请求确实以
+    /// `CONNECT www.okx.com:443` 的形式打到了代理上。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn requests_actually_travel_through_the_configured_proxy() {
+        let (port, rx) = spawn_recording_proxy();
+
+        let client = std::sync::Arc::new(OkxClient::new().expect("客户端构造失败"));
+        client
+            .reconfigure(Some(&format!("http://127.0.0.1:{port}")))
+            .expect("应接受合法的代理地址");
+
+        let requester = {
+            let client = std::sync::Arc::clone(&client);
+            tokio::spawn(async move {
+                // 结果必然是失败（假代理回 502），本测试只关心请求发去了哪里。
+                let _ = client
+                    .get_public::<crate::okx::models::ServerTime>(
+                        crate::okx::endpoints::public::TIME,
+                        RateGroup::Market,
+                        &[],
+                    )
+                    .await;
+            })
+        };
+
+        let line = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(10)))
+            .await
+            .expect("等待代理记录失败")
+            .expect("假代理没收到任何请求——说明请求根本没走代理");
+
+        assert!(
+            line.starts_with("CONNECT www.okx.com:443"),
+            "HTTPS 请求应通过 CONNECT 隧道打到 OKX；实际收到：{line}"
+        );
+
+        requester.abort();
+    }
+
+    /// `socks5://` / `socks5h://` 是本地代理最常见的形态。
+    ///
+    /// 这条测试守着 `reqwest` 的 `socks` 特性没被误删——删掉的话
+    /// `Proxy::all("socks5h://…")` 会直接报错，而用户只会看到一个
+    /// 「无法解析代理地址」的失败。
+    #[test]
+    fn socks_proxies_are_supported() {
+        let client = OkxClient::new().expect("构造失败");
+
+        for proxy in ["socks5://127.0.0.1:1080", "socks5h://127.0.0.1:1080"] {
+            client
+                .reconfigure(Some(proxy))
+                .unwrap_or_else(|err| panic!("{proxy} 必须被支持：{err}"));
+        }
+
+        client.reconfigure(None).expect("清除代理应成功");
     }
 }

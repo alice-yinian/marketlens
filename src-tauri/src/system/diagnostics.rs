@@ -142,6 +142,9 @@ pub async fn build(
 ///
 /// 用白名单而不是黑名单：新增设置项时如果忘了分类，白名单会让它**默认不出现**，
 /// 黑名单会让它**默认泄漏**。前者是「少了一条信息」，后者是一次事故。
+///
+/// `proxy` 就是这条规则救下的第一个真实例子：它的 URL 可以带 `user:pass`，
+/// 因此**刻意不进白名单**。需要看代理的人自己知道填了什么，诊断包里不需要它。
 async fn settings_snapshot(db: &Db) -> AppResult<Vec<SettingEntry>> {
     const WHITELIST: &[&str] = &["watchlist", "onboarding_done"];
 
@@ -580,6 +583,28 @@ mod security {
         assert!(
             !json.contains("some_future_secret"),
             "白名单外的设置默认不该出现——新增设置项忘了分类时，必须是「少一条信息」而不是「多一次泄漏」"
+        );
+    }
+
+    /// 代理 URL 可以带 `user:pass`，因此**必须**被白名单挡在诊断包之外。
+    ///
+    /// 这条是白名单机制的实战检验：如果哪天有人「顺手」把 `proxy` 加进白名单
+    /// 好让排查方便，这里会立刻变红，并提醒他那是一条明文密码。
+    #[tokio::test]
+    async fn proxy_credentials_never_reach_the_bundle() {
+        let db = seeded_db().await;
+        sqlx::query("INSERT INTO settings (key, value, updated_at) VALUES ('proxy', 'http://alice:s3cret@127.0.0.1:7890', ?1)")
+            .bind(crate::storage::now_ms())
+            .execute(db.pool_for_test())
+            .await
+            .expect("插入设置失败");
+
+        let bundle = build(&db, app_info(), None).await.expect("组装失败");
+        let json = serde_json::to_string(&bundle).expect("序列化失败");
+
+        assert!(
+            !json.contains("s3cret") && !json.contains("alice"),
+            "代理 URL 里的凭据绝不能进诊断包：{json}"
         );
     }
 }

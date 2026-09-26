@@ -2,11 +2,11 @@
  * 顶层装配。
  *
  * 启动时查一次 `bootstrap_state`（密钥库是否存在 / 是否已解锁 / 引导是否完成 / 标的集）：
- * - `!onboarding_done`            → 引导页（完整 3 步）；
+ * - `!onboarding_done`            → 引导页（完整 4 步）；
  * - `onboarding_done && !unlocked` → 引导页（只显示第 1 步的解锁形态），解锁后直接进主界面；
  * - `onboarding_done && unlocked`  → 主界面（顶部标签切换「实盘」/「账户」/「复盘」/「提示词」/「设置」）。
  *
- * 引导第 1 步解锁成功后**不能**立刻回写缓存：那会让顶层误判为「已解锁」而跳过第 2、3 步。
+ * 引导第 1 步解锁成功后**不能**立刻回写缓存：那会让顶层误判为「已解锁」而跳过第 2、3、4 步。
  * 只有整段引导走完（或解锁形态完成）才更新缓存。
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";

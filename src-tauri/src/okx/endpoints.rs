@@ -62,6 +62,8 @@ pub mod private {
 /// 提前登记没有调用方的路径只会变成死代码。
 pub mod public {
     pub const TICKER: &str = "/api/v5/market/ticker";
+    /// 服务器时间：最轻量的连通性探针（代理配置完立刻要能验证，见 `proxy_test`）
+    pub const TIME: &str = "/api/v5/public/time";
     /// 全市场行情：引导第 3 步的候选标的排序依据
     pub const TICKERS: &str = "/api/v5/market/tickers";
     pub const CANDLES: &str = "/api/v5/market/candles";

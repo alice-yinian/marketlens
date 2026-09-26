@@ -49,9 +49,22 @@ pub fn run() {
             init_tracing(&handle);
 
             let db = tauri::async_runtime::block_on(storage::Db::open(&handle))?;
+
+            // 代理必须在**任何请求之前**应用：引导第 2 步的凭据测试与第 4 步的候选标的
+            // 都要联网。若这些请求在无代理状态下发出，用户看到的是一个与真实原因
+            // （网络到不了 OKX）毫无关系的失败，而界面上又没有任何补救入口。
+            let proxy = tauri::async_runtime::block_on(settings::read_proxy(&db))?;
+
             app.manage(db);
             app.manage(fetch::cache::LiveCache::new());
-            app.manage(okx::client::OkxClient::new()?);
+
+            let client = okx::client::OkxClient::new()?;
+            client.reconfigure(proxy.as_deref())?;
+            if let Some(proxy) = proxy.as_deref() {
+                tracing::info!(proxy = %settings::redact_proxy(proxy), "启动时已应用已保存的网络代理");
+            }
+            app.manage(client);
+
             app.manage(vault::Vault::new(&handle)?);
             app.manage(review::ReviewRegistry::new());
 
@@ -61,6 +74,9 @@ pub fn run() {
             commands::system::app_info,
             commands::system::bootstrap_state,
             commands::system::onboarding_complete,
+            commands::network::proxy_get,
+            commands::network::proxy_set,
+            commands::network::proxy_test,
             commands::live::live_refresh,
             commands::live::watchlist_get,
             commands::vault::vault_status,
@@ -173,6 +189,7 @@ mod tests {
     use ts_rs::{Config, TS};
 
     use crate::commands::account::WatchlistCandidate;
+    use crate::commands::network::{ProxyProbe, ProxySettings};
     use crate::commands::system::BootstrapState;
     use crate::commands::vault::VaultStatus;
     use crate::credentials::{CredentialMeta, CredentialProbe};
@@ -292,6 +309,8 @@ mod tests {
             StatGroup,
             MergeReport,
             ReviewContext,
+            ProxySettings,
+            ProxyProbe,
         );
 
         let mut output = String::from(

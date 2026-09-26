@@ -2,13 +2,17 @@
  * 首次启动引导（设计文档 §6.9）与「重新配置」入口。
  *
  * 三种形态共用一个组件：
- * - `full`：完整 3 步（密钥库 → OKX 凭据 → 关注标的），首次运行走这条；
+ * - `full`：完整 4 步（密钥库 → 网络代理 → OKX 凭据 → 关注标的），首次运行走这条；
  * - `unlock`：只显示第 1 步的解锁形态，解锁后直接回主界面（引导早已完成）；
- * - `reconfigure`：只显示第 2、3 步，用于从主界面回来更新凭据 / 标的。
+ * - `reconfigure`：只显示第 2、3、4 步，用于从主界面回来更新代理 / 凭据 / 标的。
  *
- * 闸门规则：第 1 步（解锁）必须完成才能进入第 2 步；第 2 步可跳过（只看行情）；
- * 第 3 步至少选 1 个标的。`full` / `reconfigure` 走完后调用一次
- * `onboarding_complete()`（幂等）再回调 `onDone`，任何一步未完成都不会进入主界面。
+ * 闸门规则：第 1 步（解锁）必须完成才能进入第 2 步；第 2 步（代理）与第 3 步（凭据）
+ * 都可跳过（跳过代理 = 沿用系统代理、跳过凭据 = 只看行情）；第 4 步至少选 1 个标的。
+ * `full` / `reconfigure` 走完后调用一次 `onboarding_complete()`（幂等）再回调 `onDone`，
+ * 任何一步未完成都不会进入主界面。
+ *
+ * 代理排在凭据**之前**是刻意的：受限网络下「测 key」与「拉标的」都会失败，
+ * 而这两个失败都不会指向真正的原因（网络到不了 OKX）。
  */
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
@@ -17,6 +21,7 @@ import { call } from "../../lib/ipc";
 import { S } from "../../lib/strings";
 import { errorPayloadOf } from "../live/errors";
 import { StepCredential } from "./StepCredential";
+import { StepProxy } from "./StepProxy";
 import { StepVault } from "./StepVault";
 import { StepWatchlist } from "./StepWatchlist";
 
@@ -33,15 +38,16 @@ const HEADINGS: Record<OnboardingMode, { title: string; subtitle: string }> = {
 
 const STEP_LABELS: Record<number, string> = {
   1: S.onboarding.steps.vault,
-  2: S.onboarding.steps.credential,
-  3: S.onboarding.steps.watchlist,
+  2: S.onboarding.steps.proxy,
+  3: S.onboarding.steps.credential,
+  4: S.onboarding.steps.watchlist,
 };
 
 /** 各形态包含的步骤号 */
 function stepsOf(mode: OnboardingMode): number[] {
   if (mode === "unlock") return [1];
-  if (mode === "reconfigure") return [2, 3];
-  return [1, 2, 3];
+  if (mode === "reconfigure") return [2, 3, 4];
+  return [1, 2, 3, 4];
 }
 
 export function OnboardingPage({
@@ -103,7 +109,9 @@ export function OnboardingPage({
         ) : step === 1 ? (
           <StepVault exists={vaultExists} onUnlocked={() => setStep(2)} />
         ) : step === 2 ? (
-          <StepCredential onNext={() => setStep(3)} />
+          <StepProxy onNext={() => setStep(3)} />
+        ) : step === 3 ? (
+          <StepCredential onNext={() => setStep(4)} />
         ) : (
           <StepWatchlist onDone={finish} />
         )}

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /**
  * 引导流程的行为测试：三种形态（full / unlock / reconfigure）的闸门、
- * 不可找回警告、只读警示、标的数上下限、完成时写 onboarding_done。
+ * 不可找回警告、只读警示、代理「测过才放行」、标的数上下限、完成时写 onboarding_done。
  *
  * 只 mock IPC 出口（lib/ipc），页面逻辑与校验函数全部真实执行。
  */
@@ -134,7 +134,17 @@ async function click(target: HTMLElement) {
   await flush();
 }
 
-/** 填完第 2 步的四个必填项 */
+/**
+ * 走完第 2 步（代理）。
+ *
+ * 输入框为空时主按钮就是「不使用代理」——这正是「不需要代理」用户的最短路径，
+ * 所以测试里遇到的默认场景也是它。
+ */
+async function passProxyStep(host: HTMLElement) {
+  await click(button(host, S.onboarding.proxy.skip));
+}
+
+/** 填完凭据步骤的四个必填项 */
 async function fillCredentialForm(host: HTMLElement) {
   const inputs = textInputs(host);
   await setValue(inputs[0]!, "主账户");
@@ -179,7 +189,7 @@ describe("引导第 1 步：密钥库", () => {
     expect(callMock).not.toHaveBeenCalled();
   });
 
-  it("必须勾选「已知晓无法找回」后才能创建；成功后进入第 2 步", async () => {
+  it("必须勾选「已知晓无法找回」后才能创建；成功后进入第 2 步（网络代理）", async () => {
     callMock.mockImplementation((cmd: string) =>
       cmd === "vault_unlock"
         ? Promise.resolve({ exists: true, unlocked: true })
@@ -197,7 +207,7 @@ describe("引导第 1 步：密钥库", () => {
 
     await click(button(host, S.onboarding.vault.create));
     expect(callMock).toHaveBeenCalledWith("vault_unlock", { password: "pw" });
-    expect(host.textContent).toContain(S.onboarding.credential.title);
+    expect(host.textContent).toContain(S.onboarding.proxy.title);
   });
 
   it("密钥库已存在时进入解锁形态，不再显示创建警告", async () => {
@@ -235,7 +245,118 @@ describe("引导第 1 步：密钥库", () => {
   });
 });
 
-describe("引导第 2 步：OKX 凭据（reconfigure 形态从第 2 步开始）", () => {
+describe("引导第 2 步：网络代理", () => {
+  const PROXY = "http://127.0.0.1:7890";
+
+  const OK_PROBE = { ok: true, latency_ms: 42, server_time_ms: 1_700_000_000_000, error: null };
+  const FAIL_PROBE = {
+    ok: false,
+    latency_ms: 5,
+    server_time_ms: null,
+    error: "网络请求失败：代理返回 502",
+  };
+
+  function mockProxy(overrides: Record<string, unknown> = {}) {
+    callMock.mockImplementation((cmd: string) => {
+      if (cmd in overrides) return Promise.resolve(overrides[cmd]);
+      if (cmd === "proxy_get") return Promise.resolve({ url: null });
+      if (cmd === "proxy_set") return Promise.resolve({ url: PROXY });
+      if (cmd === "proxy_test") return Promise.resolve(OK_PROBE);
+      return Promise.resolve(null);
+    });
+  }
+
+  it("是第 2 步，且排在第 3 步凭据之前", async () => {
+    mockProxy();
+    const host = await renderPage("reconfigure", true);
+    expect(host.textContent).toContain(S.onboarding.proxy.title);
+    expect(host.textContent).toContain(S.onboarding.proxy.none);
+    expect(host.textContent).not.toContain(S.onboarding.credential.title);
+  });
+
+  it("保存并测试成功后才出现「下一步」，且请求打到刚保存的地址", async () => {
+    mockProxy();
+    const host = await renderPage("reconfigure", true);
+    await setValue(textInputs(host)[0]!, PROXY);
+    await flush();
+
+    // 只有「保存并测试」：没测过就不该让用户以为代理已生效
+    expect(hasButton(host, S.onboarding.proxy.next)).toBe(false);
+    await click(button(host, S.onboarding.proxy.test));
+
+    expect(callMock).toHaveBeenCalledWith("proxy_set", { input: { url: PROXY } });
+    expect(callMock).toHaveBeenCalledWith("proxy_test");
+    expect(host.textContent).toContain(S.onboarding.proxy.ok(42));
+
+    await click(button(host, S.onboarding.proxy.next));
+    expect(host.textContent).toContain(S.onboarding.credential.title);
+  });
+
+  it("改过地址后旧的探测结果作废，必须重新测试", async () => {
+    mockProxy();
+    const host = await renderPage("reconfigure", true);
+    await setValue(textInputs(host)[0]!, PROXY);
+    await flush();
+    await click(button(host, S.onboarding.proxy.test));
+    expect(hasButton(host, S.onboarding.proxy.next)).toBe(true);
+
+    await setValue(textInputs(host)[0]!, "http://127.0.0.1:9999");
+    await flush();
+
+    expect(hasButton(host, S.onboarding.proxy.next)).toBe(false);
+    expect(host.textContent).not.toContain(S.onboarding.proxy.ok(42));
+    expect(hasButton(host, S.onboarding.proxy.test)).toBe(true);
+  });
+
+  it("代理不通时给出原因与排查提示，且不出现「下一步」", async () => {
+    mockProxy({ proxy_test: FAIL_PROBE });
+    const host = await renderPage("reconfigure", true);
+    await setValue(textInputs(host)[0]!, PROXY);
+    await flush();
+    await click(button(host, S.onboarding.proxy.test));
+
+    expect(host.textContent).toContain(S.onboarding.proxy.failTitle);
+    expect(host.textContent).toContain(FAIL_PROBE.error);
+    expect(host.textContent).toContain(S.onboarding.proxy.failHint);
+    expect(hasButton(host, S.onboarding.proxy.next)).toBe(false);
+  });
+
+  it("后端拒绝非法地址时展示错误载荷，且不放行", async () => {
+    callMock.mockImplementation((cmd: string) => {
+      if (cmd === "proxy_get") return Promise.resolve({ url: null });
+      if (cmd === "proxy_set") {
+        return Promise.reject({
+          code: "Config",
+          message: "不支持的代理协议 `ftp`，可用：http / https / socks5 / socks5h",
+          retryable: false,
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const host = await renderPage("reconfigure", true);
+    await setValue(textInputs(host)[0]!, "ftp://127.0.0.1:21");
+    await flush();
+    await click(button(host, S.onboarding.proxy.test));
+
+    expect(host.textContent).toContain("不支持的代理协议");
+    expect(host.textContent).toContain(S.onboarding.errorCode("Config"));
+    expect(hasButton(host, S.onboarding.proxy.next)).toBe(false);
+    // 保存失败时不该去测一个根本没生效的代理
+    expect(callMock).not.toHaveBeenCalledWith("proxy_test");
+  });
+
+  it("「不使用代理」清除已保存的配置并进入下一步", async () => {
+    mockProxy({ proxy_get: { url: PROXY } });
+    const host = await renderPage("reconfigure", true);
+    expect(host.textContent).toContain(S.onboarding.proxy.saved(PROXY));
+
+    await click(button(host, S.onboarding.proxy.skip));
+    expect(callMock).toHaveBeenCalledWith("proxy_set", { input: { url: null } });
+    expect(host.textContent).toContain(S.onboarding.credential.title);
+  });
+});
+
+describe("引导第 3 步：OKX 凭据（reconfigure 形态从第 2 步的代理开始）", () => {
   it("保存后自动测试；带交易权限时给出红色警示", async () => {
     callMock.mockImplementation((cmd: string) => {
       if (cmd === "credentials_save") return Promise.resolve(META);
@@ -243,6 +364,7 @@ describe("引导第 2 步：OKX 凭据（reconfigure 形态从第 2 步开始）
       return Promise.resolve(null);
     });
     const host = await renderPage("reconfigure", true);
+    await passProxyStep(host);
     await fillCredentialForm(host);
     await click(button(host, S.onboarding.credential.save));
 
@@ -275,6 +397,7 @@ describe("引导第 2 步：OKX 凭据（reconfigure 形态从第 2 步开始）
       return Promise.resolve(null);
     });
     const host = await renderPage("reconfigure", true);
+    await passProxyStep(host);
     await fillCredentialForm(host);
     await click(button(host, S.onboarding.credential.save));
 
@@ -284,9 +407,10 @@ describe("引导第 2 步：OKX 凭据（reconfigure 形态从第 2 步开始）
     expect(callMock).toHaveBeenLastCalledWith("credentials_test", { id: "cred-1" });
   });
 
-  it("可跳过：明确写出「跳过也能只看行情」，跳过进入第 3 步", async () => {
+  it("可跳过：明确写出「跳过也能只看行情」，跳过进入第 4 步（标的）", async () => {
     callMock.mockResolvedValue([]);
     const host = await renderPage("reconfigure", true);
+    await passProxyStep(host);
     expect(host.textContent).toContain(S.onboarding.credential.skipNote);
     expect(hasButton(host, S.onboarding.credential.skip)).toBe(true);
     await click(button(host, S.onboarding.credential.skip));
@@ -294,10 +418,11 @@ describe("引导第 2 步：OKX 凭据（reconfigure 形态从第 2 步开始）
   });
 });
 
-describe("引导第 3 步：标的集", () => {
+describe("引导第 4 步：标的集", () => {
   async function renderWatchlist(list: WatchlistCandidate[], onDone?: () => void) {
     callMock.mockImplementation((cmd: string) => Promise.resolve(cmd === "watchlist_candidates" ? list : null));
     const host = await renderPage("reconfigure", true, onDone);
+    await passProxyStep(host);
     await click(button(host, S.onboarding.credential.skip));
     return host;
   }
@@ -354,6 +479,7 @@ describe("引导第 3 步：标的集", () => {
       return Promise.resolve(null);
     });
     const host = await renderPage("reconfigure", true, onDone);
+    await passProxyStep(host);
     await click(button(host, S.onboarding.credential.skip));
     await click(button(host, S.onboarding.watchlist.submit));
 
@@ -363,7 +489,7 @@ describe("引导第 3 步：标的集", () => {
 });
 
 describe("完整引导（full 形态）", () => {
-  it("三步走完才写 onboarding_done 并进入主界面", async () => {
+  it("四步走完才写 onboarding_done 并进入主界面", async () => {
     const onDone = vi.fn();
     callMock.mockImplementation((cmd: string) => {
       if (cmd === "vault_unlock") return Promise.resolve({ exists: true, unlocked: true });
@@ -378,6 +504,10 @@ describe("完整引导（full 形态）", () => {
     await flush();
     await click(checkboxes(host)[0]!);
     await click(button(host, S.onboarding.vault.create));
+    expect(host.textContent).toContain(S.onboarding.proxy.title);
+    expect(callMock).not.toHaveBeenCalledWith("onboarding_complete");
+
+    await passProxyStep(host);
     expect(host.textContent).toContain(S.onboarding.credential.title);
     expect(callMock).not.toHaveBeenCalledWith("onboarding_complete");
 

@@ -202,6 +202,18 @@ impl Db {
         Ok(())
     }
 
+    /// 删除一条设置。
+    ///
+    /// 用于「清除代理」这类语义：把 `proxy` 写成空串会留下一条**看起来有配置、
+    /// 实际是空**的记录，读的一侧就得永远记得处理空串；删掉则只有「有 / 没有」两态。
+    pub async fn delete_setting(&self, key: &str) -> AppResult<()> {
+        sqlx::query("DELETE FROM settings WHERE key = ?")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     // ---- 凭据元数据 -------------------------------------------------------
     // 明文密钥永远不经过这里：本表只存掩码与探测结果，明文只进 Stronghold。
 

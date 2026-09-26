@@ -962,6 +962,9 @@ sequenceDiagram
 | `prompt_preview` | `{template_body, source}` | `{text, error?}` | 编辑器实时预览 |
 | `prompt_export` | `{text, format, path?}` | `{path}` | |
 | `settings_get` / `settings_set` | | | |
+| `proxy_get` | – | `{url}` | `url === null` = 未显式配置（此时沿用系统 / 环境变量代理） |
+| `proxy_set` | `{input:{url}}` | `{url}` | 校验 → 落库 → **热重建 HTTP 客户端**（不需要重启）；`url` 为空串 / `null` = 清除 |
+| `proxy_test` | – | `{ok, latency_ms, server_time_ms, error}` | 打 `/api/v5/public/time`；**失败不抛错**，返回结构化结果（与 `credentials_test` 同款语义） |
 | `cache_stats` / `cache_clear` | `{scope?}` | | 缓存管理 |
 
 **事件**：`fetch://progress`、`fetch://throttled`、`fetch://done`、`vault://locked`。
@@ -974,13 +977,28 @@ sequenceDiagram
 
 因为已确认「默认标的集由用户自选」，首次启动需要一个引导流程。
 
-**引导步骤**（3 步）：
+**引导步骤**（4 步）：
 
 | 步骤 | 内容 | 约束 |
 |---|---|---|
 | 1. 创建密钥库 | 设置 vault 主密码（argon2 派生） | 必须完成；明确提示「密码无法找回，丢失即无法读取已存凭据」 |
-| 2. 录入 OKX 只读凭据 | API Key / Secret / Passphrase + 环境（实盘 / 模拟盘） | **可跳过**（可先只看行情不连账户）；保存后自动 `credentials_test`，探测到非只读权限时**红色警示** |
-| 3. 选择标的 | 展示按 24h 成交额排序的 Top 20 永续合约，**预勾选 BTC / ETH / SOL**，用户自由增删 | 至少 1 个，上限 10 个 |
+| 2. 网络代理 | 填 `http` / `https` / `socks5` / `socks5h` 代理 | **可跳过**（跳过 = 沿用系统 / 环境变量代理）；保存即热重建 HTTP 客户端，并用 `/api/v5/public/time` 当场验证；**测过才放行** |
+| 3. 录入 OKX 只读凭据 | API Key / Secret / Passphrase + 环境（实盘 / 模拟盘） | **可跳过**（可先只看行情不连账户）；保存后自动 `credentials_test`，探测到非只读权限时**红色警示** |
+| 4. 选择标的 | 展示按 24h 成交额排序的 Top 20 永续合约，**预勾选 BTC / ETH / SOL**，用户自由增删 | 至少 1 个，上限 10 个 |
+
+**为什么代理排在凭据之前**：受限网络（含中国大陆常见网络）下，第 3 步的
+`credentials_test` 与第 4 步的 `watchlist_candidates` 都会失败，而这两个失败
+**都不指向真正的原因**（网络到不了 OKX）——用户会以为是密钥填错了。
+代理放在它们之前，才有机会在遇到那两个失败**之前**把路打通。
+
+**为什么不填代理 ≠ 直连**：`reqwest` 的 `system-proxy` 特性会让无显式配置的客户端
+去读系统 / 环境变量代理（Windows 系统代理、`HTTP(S)_PROXY`、`ALL_PROXY`）。
+界面上写的是「未配置（沿用系统 / 环境变量代理）」而不是「直连」，因为后者会误导。
+一旦用户填了显式代理，`ClientBuilder::proxy` 会自动关掉系统代理路径——
+优先级是**显式配置 > 系统设置**，否则「我改了代理却没用」会成为一个无法解释的现象。
+
+**为什么「保存并测试」是一个按钮**：只保存不测试，用户不知道填对没有；
+只测试不保存，下一步用的还是旧配置。
 
 **为什么预勾选**：完全空白的多选框会让新用户卡住；预勾选推荐值既尊重「自己选」的意愿，又给了合理起点。点「下一步」即完成，想调整随时在设置里改。
 
@@ -991,7 +1009,8 @@ sequenceDiagram
 - 移除某标的时**不删除其历史数据**——已定型缓存保留，将来重新加回时仍可用。
 - 上限 10 个（控制复盘请求量），UI 明确展示「当前 3 / 10」及原因。
 
-**引导持久化**：`settings.onboarding_done = true`。启动时若未完成引导 → 直接进入引导页，不进入实盘页（避免用户在无标的集状态下看到一个空看板而困惑）。
+**引导持久化**：`settings.onboarding_done = true`；代理同理落 `settings.proxy`。
+启动时若未完成引导 → 直接进入引导页，不进入实盘页（避免用户在无标的集状态下看到一个空看板而困惑）。
 
 ---
 
@@ -1320,6 +1339,7 @@ CREATE TABLE journal (
 | 越权交易 | 代码层面不实现任何私有 `POST` 端点；`credentials_test` 主动读取权限，非只读时**红色警示** |
 | 前端注入 → 数据泄漏 | 不向前端暴露 SQL 与 vault 命令；`capabilities/default.json` **仅放行 `core:default`**；CSP 收紧为 `default-src 'self'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost`。注意 **`connect-src` 里刻意不含 `okx.com`**——所有交易所请求都由 Rust 侧发起，WebView 永远不需要直连外网，这比原设计更紧 |
 | 提示词泄漏隐私 | 隐私分级在上下文装配阶段强制生效；导出时按等级二次确认 |
+| **代理凭据泄漏** | 代理 URL 存 `settings.proxy`（**明文**）——它必须在密钥库解锁**之前**就生效，放进 vault 会让冷启动的公共请求拿不到它。补偿措施是三道：诊断导出的设置白名单**刻意不含** `proxy`（有测试守着）、日志里一律走 `redact_proxy`（只保留用户名，密码换 `***`）、界面明示「地址里带 `user:pass` 会明文落盘，本地代理通常无需凭据」 |
 | 剪贴板残留 | 复制提示词后 60s 自动清空剪贴板（可选，默认开） |
 | 无人值守 | 15 分钟无操作自动锁 vault |
 | 依赖供应链 | `cargo deny` / `cargo audit` + `npm audit` 接入 CI |
@@ -1378,6 +1398,16 @@ CREATE TABLE journal (
 | **退避** | `backoff_stays_within_bounds` |
 
 **联网测试（默认 `#[ignore]`）**：`okx_live_snapshot_is_sane`（端到端采集并打印数值供人工比对）、`dump_indicators_for_crosscheck`（落盘输入与输出）。它们访问真实 API，不进 CI。
+
+**网络代理（增量）**：
+
+| 测试 | 守住什么 |
+|---|---|
+| `proxy_accepts_the_schemes_users_actually_run` / `proxy_rejects_things_that_are_not_proxy_addresses` | 代理 URL 的输入边界：接受 `http` / `https` / `socks4` / `socks5` / `socks5h`；拒绝**订阅链接**（带路径 / 查询串的 https URL，`reqwest` 会接受它然后在运行时才失败） |
+| `requests_actually_travel_through_the_configured_proxy` | **起一个记录请求行的本地假代理**，断言 OKX 的 HTTPS 请求以 `CONNECT www.okx.com:443` 打到代理上。只断言「`reconfigure` 没报错」是自证式测试——代理根本没接上时它照样通过 |
+| `socks_proxies_are_supported` | `reqwest` 的 `socks` 特性没被误删（删掉后 `Proxy::all("socks5h://…")` 会直接报错，用户只看到「无法解析代理地址」） |
+| `proxy_credentials_never_reach_the_bundle` | 诊断包的白名单机制实战验收：代理 URL 里的 `user:pass` 绝不进诊断包 |
+| `redact_proxy_masks_only_the_password` | 日志脱敏是**函数**而不是「记得别打」的约定 |
 
 ### 13.2 指标公式的独立交叉验证 ⭐
 
@@ -1613,7 +1643,7 @@ keytool -genkey -v -keystore ~/upload-keystore.jks \
 
 | # | 检查项 | 为什么 |
 |---|---|---|
-| 1 | 冷启动进引导页，3 步能走完 | 引导是唯一入口，它坏了应用等于不可用 |
+| 1 | 冷启动进引导页，**4 步**（密钥库 → 网络代理 → 凭据 → 标的）能走完 | 引导是唯一入口，它坏了应用等于不可用 |
 | 2 | 密钥库解锁后**冷重启**只要求解锁，不再要求重建 | 解锁状态不该被持久化，但凭据必须能重新解开 |
 | 3 | 实盘页拿到真实行情（3 个标的、无警告） | 验证出网、限流器、指标计算三段都通 |
 | 4 | 账户页显示真实权益与持仓 | 验证签名算法与私有端点 |
@@ -1623,6 +1653,7 @@ keytool -genkey -v -keystore ~/upload-keystore.jks \
 | 8 | 导出：复制到剪贴板有反馈；另存为产生「自定义」模板 | 导出是唯一的产出出口 |
 | 9 | 设置页：缓存统计有数据；清理有二次确认 | 清理不可撤销 |
 | 10 | 设置页：诊断导出成功，`redactions` 与实际相符 | 见下条 |
+| 11 | 设置页 → 网络代理：填可用代理后「保存」显示往返耗时；填 `http://127.0.0.1:1` 显示「代理不通」且引导里不放行 | 受限网络下代理坏了，应用等于不可用——而它的失败最容易被误读成「密钥不对」 |
 
 #### 脱敏必须**人工核对一次**
 
@@ -1632,7 +1663,7 @@ keytool -genkey -v -keystore ~/upload-keystore.jks \
 - 不含 API Key 的任何片段（连打码后的都不该有）
 - 不含用户名（家目录路径已被替换成 `[已脱敏:家目录]`）
 
-自动化测试覆盖了这些（`system::diagnostics::security` 有 5 项），但**首次发布前
+自动化测试覆盖了这些（`system::diagnostics::security` 有 6 项），但**首次发布前
 人工看一遍**仍然值得：测试断言的是我想到的模式，而泄漏可能来自我没想到的地方。
 
 #### 分平台
@@ -2209,6 +2240,7 @@ npx tauri build --no-bundle
 | 复盘拉取 300 个请求耗时较长 | 用户等待焦虑 | 进度条 + 可取消 + 优先级调度（先出主体内容）+ 完成后永久缓存 |
 | 模板里不可得字段被 AI 当成「无数据即无风险」 | 错误结论 | `na` 过滤器强制输出「数据不可得：原因」；提示词开头有可得性声明段落 |
 | Stronghold argon2 在低端 Android 解锁慢 | 体验差 | 实测解锁耗时；必要时降低 argon2 参数（安全 vs 体验权衡需记录） |
+| **本机网络无法直连 OKX**（受限网络下常见） | 引导里测 key、拉标的、实盘与复盘**全部失败**，且失败信息指向不了真正原因 | 引导第 2 步内建代理配置 + 当场连通性探测（`/api/v5/public/time`）；未配置时沿用系统 / 环境变量代理；支持 `socks5h`（DNS 交给代理解析，绕过污染）；「保存即测试」保证配置当场可验证 |
 | minijinja `Strict` 模式下用户模板易报错 | 挫败感 | 编辑器实时校验 + 友好错误（行号 + 变量名 + 建议） |
 
 **全部开放问题已于 2026-09-25 确认关闭**，结论汇总见 §2 需求确认结果表。
@@ -2242,3 +2274,4 @@ npx tauri build --no-bundle
 | **16** | **复盘时段硬上限 90 天** | 90 天 ≈ 8 页/标的 K 线，单次拉取 10 秒内完成，覆盖月度/季度复盘需求；配合永久缓存，反复查看零成本 | 不设上限（单次数千请求，等待时间不可控） |
 | **17** | **首次启动由用户自选标的（预勾选 BTC/ETH/SOL）** | 尊重用户对标的的自主权，同时用预勾选避免新用户面对空白多选框卡住；上限 10 个控制复盘请求量 | 硬编码默认标的（用户第一眼看到不关心的币） |
 | **18** | **界面文案集中 `strings.ts`，本期不上 i18next** | 满足「不硬编码」的可维护性诉求，又不引入本期无收益的双语工作量；模板正文本身已是集中管理 | 现在就双语（无收益）、直接写死（将来难抽） |
+| **19** | **网络代理在引导内可配，且「保存即测试」** | 受限网络下 `credentials_test` 与 `watchlist_candidates` 都会失败，而失败信息不指向真正原因（网络到不了 OKX）；显式代理 > 系统代理，未配置则沿用系统 / 环境变量代理 | 只认环境变量（GUI 应用里用户根本没法设）、配置后要求重启（用户会以为没生效）、只保存不测试（用户不知道填对没有） |

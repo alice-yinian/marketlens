@@ -129,18 +129,19 @@ export const S = {
     errorTitle: "启动失败",
   },
 
-  // 首次启动引导（设计文档 §6.9 的三步流程）
+  // 首次启动引导（设计文档 §6.9 的四步流程）
   onboarding: {
     title: "首次使用引导",
-    subtitle: "三步完成初始化：密钥库 → OKX 凭据 → 关注标的",
+    subtitle: "四步完成初始化：密钥库 → 网络代理 → OKX 凭据 → 关注标的",
     unlockTitle: "解锁密钥库",
     unlockSubtitle: "输入主密码以继续。",
     reconfigureTitle: "重新配置",
-    reconfigureSubtitle: "更新 OKX 凭据或关注标的。",
+    reconfigureSubtitle: "更新网络代理、OKX 凭据或关注标的。",
     stepIndicator: (n: number, total: number) => `第 ${n} / ${total} 步`,
     finishing: "正在完成引导…",
     steps: {
       vault: "创建 / 解锁密钥库",
+      proxy: "网络代理",
       credential: "录入 OKX 凭据",
       watchlist: "选择标的",
     },
@@ -164,6 +165,33 @@ export const S = {
       create: "创建并解锁",
       unlock: "解锁",
       working: "处理中…",
+    },
+
+    // 第 2 步：网络代理。放在凭据之前，是因为受限网络下「测 key」与「拉标的」
+    // 都会失败，而失败信息不会指向真正的原因（网络到不了 OKX）。
+    proxy: {
+      title: "网络代理（可选）",
+      hint:
+        "如果你的网络无法直接访问 OKX，请在这里填写代理。保存后立即生效——下一步的凭据测试与之后的行情拉取都会走它，不需要重启。",
+      url: "代理地址",
+      placeholder: "http://127.0.0.1:7890",
+      schemes: "支持 http / https / socks5 / socks5h。本地代理通常不需要用户名密码。",
+      credentialWarning:
+        "地址里若带 `user:pass`，该凭据会随设置明文存在本机——代理必须在密钥库解锁前就生效，因此不能放进密钥库。",
+      saved: (url: string) => `当前已保存：${url}`,
+      none: "当前未配置代理（沿用系统 / 环境变量代理）",
+      test: "保存并测试",
+      testing: "正在保存并测试…",
+      ok: (ms: number) => `代理连通，往返 ${ms} ms`,
+      failTitle: "代理不通",
+      failHint:
+        "请确认代理进程已启动、端口正确，且地址形如 `http://127.0.0.1:7890`；也检查代理节点本身能否访问 OKX。",
+      serverTime: (time: string) => `OKX 服务器时间：${time}`,
+      next: "下一步",
+      skip: "不使用代理",
+      skipHint:
+        "不填时会沿用系统 / 环境变量代理（Windows 系统代理、HTTP(S)_PROXY、ALL_PROXY）；系统也没配才是直连。",
+      loadErrorTitle: "读取代理配置失败",
     },
 
     credential: {
@@ -637,7 +665,27 @@ export const S = {
   // 设置页（M6）：缓存管理 + 诊断导出 + 版本信息
   settings: {
     title: "设置",
-    subtitle: "缓存管理 · 诊断导出 · 版本信息",
+    subtitle: "网络代理 · 缓存管理 · 诊断导出 · 版本信息",
+
+    // 0) 网络代理（引导里配过一次，这里是随时可改的入口）
+    proxy: {
+      title: "网络代理",
+      subtitle: "保存后立即生效，不需要重启应用",
+      url: "代理地址",
+      placeholder: "http://127.0.0.1:7890",
+      schemes: "支持 http / https / socks5 / socks5h；留空表示不使用显式代理。",
+      credentialWarning:
+        "地址里若带 `user:pass`，该凭据会随设置明文存在本机（代理不能放进密钥库：它要在解锁前就生效）。",
+      save: "保存",
+      saving: "保存中…",
+      saved: "已保存，后续请求立即走新代理。",
+      ok: (ms: number) => `代理连通，往返 ${ms} ms`,
+      failTitle: "代理不通",
+      failHint: "请确认代理进程已启动、端口正确，并检查代理节点能否访问 OKX。",
+      serverTime: (time: string) => `OKX 服务器时间：${time}`,
+      loadErrorTitle: "读取代理配置失败",
+      saveErrorTitle: "保存失败",
+    },
 
     // 1) 缓存管理
     cache: {
