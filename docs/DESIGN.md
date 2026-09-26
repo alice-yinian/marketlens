@@ -1643,6 +1643,15 @@ jobs:
   影响面：**仅 Linux**（`cfg(target_os = "linux")` 才引入），且 `cargo audit`
   将它归入 `warnings.unsound` 而非 `vulnerabilities`（实测 `count: 0`），
   因此**不会让 CI 变红**。当前不抑制、不 ignore，保持可见。
+- **同一次审计还会报 8 条 `unmaintained`**（`bincode 1.3.3`、`paste`、
+  `proc-macro-error`、`unic-char-property` / `unic-char-range` / `unic-common` /
+  `unic-ucd-ident` / `unic-ucd-version`）。全是**传递依赖**，本仓库没有任何直接依赖：
+  `bincode` 来自 `iota_stronghold`（密钥库）、`proc-macro-error` 来自 `glib-macros`
+  （即上面那条 tauri → gtk → glib 链）、`unic-*` 与 `paste` 来自
+  `tauri-utils → urlpattern`。`unmaintained` 是「作者不再维护」而不是「有漏洞」，
+  修复要等上游换依赖，因此同样只记录、不 ignore。
+  这条注解在 v0.2.0 / v0.3.0 的 check job 里就已经存在（不是某次改动的引入），
+  只是 `gh run watch` 的输出被截断时容易看不见——写在这里，下次看到不至于重新查一遍。
 - 产物：`MarketLens_x.y.z_x64-setup.exe`（Windows 安装包）、`MarketLens_x.y.z_arm64-v8a.apk`（自用分发）、`MarketLens_x.y.z.aab`（备用，未上架前仅归档）。
 - 包名 `com.marketlens.app` 必须与 `tauri.conf.json` 的 `identifier`、Android 工程保持一致。**首次发布后不可更改**——改动会让系统视为全新应用，导致无法覆盖升级。
 
