@@ -1,6 +1,6 @@
 {
   "name": "marketlens",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "OKX 市场状态 + 仓位 → AI 复盘提示词生成工具（Windows / Android）",
