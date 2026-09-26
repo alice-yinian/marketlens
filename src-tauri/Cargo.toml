@@ -1,6 +1,6 @@
 [package]
 name = "marketlens"
-version = "0.3.0"
+version = "0.4.0"
 description = "OKX 市场状态 + 仓位 → AI 复盘提示词生成工具（Windows / Android）"
 edition = "2024"
 rust-version = "1.85"
